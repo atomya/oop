@@ -28,10 +28,10 @@ def build_demo_accounts():
     ]
 
 
-def run_demo():
-    account_service = AccountService(AccountAuditLogger())
+def run_demo(account_service: AccountService):
     accounts = build_demo_accounts()
     regular, savings, premium, investment = accounts
+    messages = []
 
     account_service.deposit(regular, 500)
     account_service.withdraw(regular, 200)
@@ -46,7 +46,7 @@ def run_demo():
     try:
         account_service.withdraw(premium, 1500)
     except InsufficientFundsError as error:
-        print(f"Premium account operation failed: {error}")
+        messages.append(f"Premium account operation failed: {error}")
 
     account_service.deposit(investment, 5000)
     account_service.invest_in_asset(investment, "stocks", 1500)
@@ -58,15 +58,32 @@ def run_demo():
     try:
         account_service.deposit(frozen_account, 100)
     except AccountFrozenError as error:
-        print(f"Frozen account operation failed: {error}")
+        messages.append(f"Frozen account operation failed: {error}")
 
-    for account in [*accounts, frozen_account]:
+    return {
+        "messages": messages,
+        "accounts": [*accounts, frozen_account],
+        "growth_projection": growth_projection,
+    }
+
+
+def render_demo_output(demo_result):
+    for message in demo_result["messages"]:
+        print(message)
+
+    for account in demo_result["accounts"]:
         print(account)
         print(account.get_account_info())
 
-    print("Investment yearly projection:", growth_projection)
+    print("Investment yearly projection:", demo_result["growth_projection"])
+
+
+def main():
+    configure_logging()
+    account_service = AccountService(AccountAuditLogger())
+    demo_result = run_demo(account_service)
+    render_demo_output(demo_result)
 
 
 if __name__ == "__main__":
-    configure_logging()
-    run_demo()
+    main()
