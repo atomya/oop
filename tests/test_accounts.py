@@ -29,6 +29,12 @@ class FakeAuditLogger:
 
 
 class BankAccountTestCase(unittest.TestCase):
+    def test_bank_account_generates_short_account_id(self):
+        account = BankAccount("Alice", Currency.USD)
+
+        self.assertEqual(len(account.account_id), 8)
+        self.assertGreaterEqual(sum(char.isdigit() for char in account.account_id), 4)
+
     def test_bank_account_rejects_invalid_amounts(self):
         account = BankAccount("Alice", Currency.USD)
 
@@ -68,6 +74,24 @@ class BankAccountTestCase(unittest.TestCase):
 
 class AccountConfigValidationTestCase(unittest.TestCase):
     def test_constructor_config_values_reject_invalid_inputs(self):
+        with self.assertRaises(InvalidOperationError):
+            BankAccount("Alice", Currency.USD, status="frozen")
+
+        with self.assertRaises(InvalidOperationError):
+            BankAccount("Alice", "USD")
+
+        with self.assertRaises(InvalidOperationError):
+            BankAccount("Alice", Currency.USD, account_id="ABCD12")
+
+        with self.assertRaises(InvalidOperationError):
+            BankAccount("Alice", Currency.USD, account_id="")
+
+    def test_constructor_rejects_duplicate_account_id(self):
+        BankAccount("Alice", Currency.USD, account_id="AB12CD34")
+
+        with self.assertRaises(InvalidOperationError):
+            BankAccount("Bob", Currency.USD, account_id="AB12CD34")
+
         with self.assertRaises(InvalidOperationError):
             SavingsAccount("Bob", Currency.EUR, min_balance=True, monthly_interest_rate=0.03)
 
@@ -196,12 +220,39 @@ class InvestmentAccountTestCase(unittest.TestCase):
         account = InvestmentAccount("Diana", Currency.USD)
         account.deposit(1000)
         account.invest_in_asset("stocks", 400)
+        balance_before = account.balance
+        portfolio_before = dict(account.portfolio)
 
         with self.assertRaises(InvalidOperationError):
             account.invest_in_asset("crypto", 100)
 
+        self.assertEqual(account.balance, balance_before)
+        self.assertEqual(account.portfolio, portfolio_before)
+
         with self.assertRaises(InvalidOperationError):
             account.sell_asset("stocks", 500)
+
+
+class AccountStringFormatTestCase(unittest.TestCase):
+    def test_account_string_uses_masked_id_suffix(self):
+        accounts = [
+            BankAccount("Alice", Currency.USD, account_id="AB98CD76"),
+            SavingsAccount("Bob", Currency.EUR, min_balance=0, monthly_interest_rate=0.02, account_id="87AB65CD43E21"),
+            PremiumAccount(
+                "Charlie",
+                Currency.USD,
+                overdraft_limit=500,
+                withdrawal_limit=1000,
+                fixed_fee=10,
+                account_id="11AB22CD33EF44",
+            ),
+            InvestmentAccount("Diana", Currency.USD, account_id="ZX99CV88BN77"),
+        ]
+
+        for account in accounts:
+            account_string = str(account)
+            digits_only = "".join(char for char in account.account_id if char.isdigit())
+            self.assertIn(f"****{digits_only[-4:]}", account_string)
 
 
 class AccountServiceTestCase(unittest.TestCase):

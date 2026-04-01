@@ -12,7 +12,13 @@ from exceptions import (
 class BankAccount(AbstractAccount):
     def __init__(self, owner, currency: Currency, account_id=None, status=AccountStatus.ACTIVE):
         super().__init__(owner, account_id, status=status)
-        self._currency = currency
+        self._currency = self._validate_currency(currency)
+
+    @staticmethod
+    def _validate_currency(currency: Currency) -> Currency:
+        if not isinstance(currency, Currency):
+            raise InvalidOperationError("Currency must be a Currency enum")
+        return currency
 
     @property
     def account_id(self) -> str:
@@ -97,7 +103,7 @@ class BankAccount(AbstractAccount):
     def __str__(self):
         return (
             f"BankAccount {self.owner} "
-            f"{self.account_id} "
+            f"{self._masked_account_id()} "
             f"{self.status.value} "
             f"{self.balance} {self.currency.value}"
         )

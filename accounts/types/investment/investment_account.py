@@ -37,8 +37,9 @@ class InvestmentAccount(BankAccount):
         if amount > self._balance:
             raise InsufficientFundsError()
 
+        normalized_asset_type = self._portfolio.validate_asset_type(asset_type)
         self._balance -= amount
-        self._portfolio.invest(asset_type, amount)
+        self._portfolio.invest(normalized_asset_type, amount)
 
     def sell_asset(self, asset_type: str, amount) -> None:
         amount = self._validate_amount(amount)
@@ -59,7 +60,7 @@ class InvestmentAccount(BankAccount):
         invested_total = self._portfolio.total_invested()
         return (
             f"InvestmentAccount {self.owner} "
-            f"{self.account_id} "
+            f"{self._masked_account_id()} "
             f"{self.status.value} "
             f"available_balance={self.balance} {self.currency.value} "
             f"portfolio={invested_total}"

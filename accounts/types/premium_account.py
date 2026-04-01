@@ -62,7 +62,7 @@ class PremiumAccount(BankAccount):
     def __str__(self):
         return (
             f"PremiumAccount {self.owner} "
-            f"{self.account_id} "
+            f"{self._masked_account_id()} "
             f"{self.status.value} "
             f"{self.balance} {self.currency.value} "
             f"overdraft={self._overdraft_limit} fee={self._fixed_fee}"

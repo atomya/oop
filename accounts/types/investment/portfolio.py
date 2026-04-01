@@ -18,6 +18,9 @@ class Portfolio:
             raise InvalidOperationError(f"Unsupported asset type: {asset_type}")
         return normalized
 
+    def validate_asset_type(self, asset_type: str) -> str:
+        return self._normalize_asset_type(asset_type)
+
     def invest(self, asset_type: str, amount: Decimal) -> str:
         normalized = self._normalize_asset_type(asset_type)
         self._positions[normalized].add(amount)

@@ -59,7 +59,7 @@ class SavingsAccount(BankAccount):
     def __str__(self):
         return (
             f"SavingsAccount {self.owner} "
-            f"{self.account_id} "
+            f"{self._masked_account_id()} "
             f"{self.status.value} "
             f"{self.balance} {self.currency.value} "
             f"min={self._min_balance} rate={self._monthly_interest_rate}"
