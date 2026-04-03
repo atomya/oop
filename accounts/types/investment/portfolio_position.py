@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from decimal import Decimal
 
-from exceptions import InvalidOperationError
+from shared.exceptions import InvalidOperationError
 
 
 @dataclass

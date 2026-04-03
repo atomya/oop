@@ -1,4 +1,5 @@
 import logging
+from datetime import date, datetime
 
 from accounts import (
     BankAccount,
@@ -6,8 +7,10 @@ from accounts import (
     PremiumAccount,
     SavingsAccount,
 )
-from enums import Currency, AccountStatus
-from exceptions import AccountFrozenError, InsufficientFundsError
+from domain.bank import Bank
+from domain.client import Client
+from shared.enums import Currency, AccountStatus
+from shared.exceptions import AccountFrozenError, InsufficientFundsError, InvalidOperationError
 from services.account_audit_logger import AccountAuditLogger
 from services.account_service import AccountService
 
@@ -67,6 +70,39 @@ def run_demo(account_service: AccountService):
     }
 
 
+def run_bank_demo():
+    bank = Bank("Day 3 Demo Bank", now_provider=lambda: datetime(2026, 4, 3, 10, 0))
+    client = Client(
+        full_name="Frank Stone",
+        birth_date=date(1998, 4, 3),
+        contacts={"phone": "+15550001111", "email": "frank@example.com"},
+        pin_code="2468",
+        client_id="client-9001",
+    )
+    bank.add_client(client)
+    account = bank.open_account(client.client_id, SavingsAccount, currency=Currency.USD, min_balance=50, monthly_interest_rate=0.01)
+    search_result = bank.search_accounts(client_id=client.client_id)
+    messages = []
+
+    try:
+        bank.authenticate_client(client.client_id, "0000")
+    except InvalidOperationError as error:
+        messages.append(f"Authentication failed: {error}")
+
+    authenticated_client = bank.authenticate_client(client.client_id, "2468")
+    bank.freeze_account(account.account_id)
+    bank.unfreeze_account(account.account_id)
+
+    return {
+        "messages": messages,
+        "bank": bank,
+        "client": authenticated_client,
+        "account": account,
+        "search_result": search_result,
+        "ranking": bank.get_clients_ranking(),
+    }
+
+
 def render_demo_output(demo_result):
     for message in demo_result["messages"]:
         print(message)
@@ -78,11 +114,23 @@ def render_demo_output(demo_result):
     print("Investment yearly projection:", demo_result["growth_projection"])
 
 
+def render_bank_demo_output(bank_demo_result):
+    for message in bank_demo_result["messages"]:
+        print(message)
+
+    print(bank_demo_result["client"])
+    print(bank_demo_result["account"])
+    print("Bank search result:", [account.account_id for account in bank_demo_result["search_result"]])
+    print("Bank ranking:", bank_demo_result["ranking"])
+
+
 def main():
     configure_logging()
     account_service = AccountService(AccountAuditLogger())
     demo_result = run_demo(account_service)
+    bank_demo_result = run_bank_demo()
     render_demo_output(demo_result)
+    render_bank_demo_output(bank_demo_result)
 
 
 if __name__ == "__main__":

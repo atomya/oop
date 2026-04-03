@@ -1,0 +1,259 @@
+from datetime import datetime
+from decimal import Decimal
+from typing import Callable
+
+from accounts import BankAccount
+from domain.client import Client
+from shared.enums import AccountStatus, ClientStatus, Currency
+from shared.exceptions import InvalidOperationError
+
+
+class Bank:
+    def __init__(self, name: str, now_provider: Callable[[], datetime] | None = None):
+        self._name = self._validate_name(name)
+        self._clients: dict[str, Client] = {}
+        self._accounts: dict[str, BankAccount] = {}
+        self._account_owners: dict[str, str] = {}
+        self._suspicious_actions: list[dict] = []
+        self._now_provider = now_provider or datetime.now
+
+    @staticmethod
+    def _validate_name(name: str) -> str:
+        if not isinstance(name, str) or not name.strip():
+            raise InvalidOperationError("Bank name must be a non-empty string")
+        return name.strip()
+
+    @staticmethod
+    def _validate_identifier(value, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise InvalidOperationError(f"{label} must be a non-empty string")
+        return value.strip()
+
+    @staticmethod
+    def _validate_account_type(account_type, *, allow_none: bool = False):
+        if account_type is None and allow_none:
+            return None
+
+        if not isinstance(account_type, type) or not issubclass(account_type, BankAccount):
+            raise InvalidOperationError("Account type must inherit from BankAccount")
+        return account_type
+
+    @staticmethod
+    def _validate_account_status(status: AccountStatus | None) -> AccountStatus | None:
+        if status is None:
+            return None
+        if not isinstance(status, AccountStatus):
+            raise InvalidOperationError("Status must be an AccountStatus enum")
+        return status
+
+    @staticmethod
+    def _validate_currency(currency: Currency | None) -> Currency | None:
+        if currency is None:
+            return None
+        if not isinstance(currency, Currency):
+            raise InvalidOperationError("Currency must be a Currency enum")
+        return currency
+
+    @staticmethod
+    def _validate_query(query: str | None) -> str | None:
+        if query is None:
+            return None
+        if not isinstance(query, str) or not query.strip():
+            raise InvalidOperationError("Search query must be a non-empty string")
+        return query.strip().lower()
+
+    @staticmethod
+    def _validate_only_active(only_active) -> bool:
+        if not isinstance(only_active, bool):
+            raise InvalidOperationError("only_active must be a boolean")
+        return only_active
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @property
+    def suspicious_actions(self) -> list[dict]:
+        return list(self._suspicious_actions)
+
+    def _now(self) -> datetime:
+        return self._now_provider()
+
+    def _is_restricted_hours(self) -> bool:
+        current_hour = self._now().hour
+        return 0 <= current_hour < 5
+
+    def _get_client(self, client_id: str) -> Client:
+        client_id = self._validate_identifier(client_id, "Client ID")
+        client = self._clients.get(client_id)
+        if client is None:
+            raise InvalidOperationError("Client not found")
+        return client
+
+    def _get_account(self, account_id: str) -> BankAccount:
+        account_id = self._validate_identifier(account_id, "Account ID")
+        account = self._accounts.get(account_id)
+        if account is None:
+            raise InvalidOperationError("Account not found")
+        return account
+
+    def _mark_suspicious_action(self, action: str, client: Client | None = None, **details) -> None:
+        timestamp = self._now().isoformat(timespec="seconds")
+        suspicious_action = {
+            "timestamp": timestamp,
+            "action": action,
+            "client_id": client.client_id if client else None,
+            **details,
+        }
+        self._suspicious_actions.append(suspicious_action)
+
+        if client is not None:
+            client.mark_suspicious_action(action)
+
+    def _ensure_operation_allowed(self, action: str, client: Client | None = None, **details) -> None:
+        if self._is_restricted_hours():
+            self._mark_suspicious_action(action, client=client, reason="restricted_hours", **details)
+            raise InvalidOperationError("Operations are not allowed between 00:00 and 05:00")
+
+    def add_client(self, client: Client) -> None:
+        if not isinstance(client, Client):
+            raise InvalidOperationError("Bank can only register Client instances")
+        if client.client_id in self._clients:
+            raise InvalidOperationError("Client ID must be unique")
+        self._clients[client.client_id] = client
+
+    def open_account(self, client_id: str, account_type: type[BankAccount] = BankAccount, **account_data) -> BankAccount:
+        account_type = self._validate_account_type(account_type)
+        client = self._get_client(client_id)
+        self._ensure_operation_allowed("open_account", client=client)
+
+        if client.status == ClientStatus.BLOCKED:
+            raise InvalidOperationError("Blocked client cannot open new accounts")
+
+        if "owner" in account_data:
+            account_data.pop("owner")
+
+        account = account_type(owner=client.full_name, **account_data)
+        self._accounts[account.account_id] = account
+        self._account_owners[account.account_id] = client.client_id
+        client.register_account(account.account_id)
+        return account
+
+    def close_account(self, account_id: str) -> None:
+        account = self._get_account(account_id)
+        owner = self._get_client(self._account_owners[account_id])
+        self._ensure_operation_allowed("close_account", client=owner, account_id=account_id)
+
+        account.close()
+        owner.remove_account(account_id)
+
+    def freeze_account(self, account_id: str) -> None:
+        account = self._get_account(account_id)
+        owner = self._get_client(self._account_owners[account_id])
+        self._ensure_operation_allowed("freeze_account", client=owner, account_id=account_id)
+        account.freeze()
+
+    def unfreeze_account(self, account_id: str) -> None:
+        account = self._get_account(account_id)
+        owner = self._get_client(self._account_owners[account_id])
+        self._ensure_operation_allowed("unfreeze_account", client=owner, account_id=account_id)
+        account.unfreeze()
+
+    def authenticate_client(self, client_id: str, pin_code) -> Client:
+        client = self._get_client(client_id)
+
+        if client.status == ClientStatus.BLOCKED:
+            self._mark_suspicious_action("authenticate_client", client=client, reason="blocked_client")
+            raise InvalidOperationError("Client is blocked")
+
+        if not client.verify_pin_code(pin_code):
+            attempts = client.record_failed_login()
+            self._mark_suspicious_action(
+                "authenticate_client",
+                client=client,
+                reason="invalid_credentials",
+                attempts=attempts,
+            )
+
+            if attempts >= 3:
+                client.block()
+                self._mark_suspicious_action(
+                    "authenticate_client",
+                    client=client,
+                    reason="client_blocked_after_failed_attempts",
+                    attempts=attempts,
+                )
+                raise InvalidOperationError("Client is blocked after 3 failed authentication attempts")
+
+            raise InvalidOperationError("Invalid client credentials")
+
+        client.reset_failed_logins()
+        return client
+
+    def search_accounts(
+        self,
+        query: str | None = None,
+        client_id: str | None = None,
+        status: AccountStatus | None = None,
+        currency: Currency | None = None,
+        account_type: type[BankAccount] | None = None,
+    ) -> list[BankAccount]:
+        query = self._validate_query(query)
+        status = self._validate_account_status(status)
+        currency = self._validate_currency(currency)
+        account_type = self._validate_account_type(account_type, allow_none=True)
+        accounts = list(self._accounts.values())
+
+        if client_id is not None:
+            client = self._get_client(client_id)
+            client_accounts = set(client.account_ids)
+            accounts = [account for account in accounts if account.account_id in client_accounts]
+
+        if query is not None:
+            accounts = [
+                account
+                for account in accounts
+                if query in account.account_id.lower() or query in account.owner.lower()
+            ]
+
+        if status is not None:
+            accounts = [account for account in accounts if account.status == status]
+
+        if currency is not None:
+            accounts = [account for account in accounts if account.currency == currency]
+
+        if account_type is not None:
+            accounts = [account for account in accounts if isinstance(account, account_type)]
+
+        return accounts
+
+    def get_total_balance(self) -> Decimal:
+        total = Decimal("0.00")
+        for account in self._accounts.values():
+            if account.status != AccountStatus.CLOSED:
+                total += account.balance
+        return total
+
+    def get_clients_ranking(self, only_active: bool = True) -> list[dict]:
+        only_active = self._validate_only_active(only_active)
+        ranking = []
+
+        for client in self._clients.values():
+            if only_active and client.status != ClientStatus.ACTIVE:
+                continue
+
+            total_balance = Decimal("0.00")
+            for account_id in client.account_ids:
+                total_balance += self._accounts[account_id].balance
+
+            ranking.append(
+                {
+                    "client_id": client.client_id,
+                    "full_name": client.full_name,
+                    "total_balance": total_balance,
+                    "accounts_count": len(client.account_ids),
+                    "status": client.status.value,
+                }
+            )
+
+        return sorted(ranking, key=lambda item: item["total_balance"], reverse=True)

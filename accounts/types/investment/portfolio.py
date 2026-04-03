@@ -2,7 +2,7 @@ from decimal import Decimal
 
 from accounts.types.investment.portfolio_position import PortfolioPosition
 from accounts.types.investment.rules import InvestmentRules
-from exceptions import InvalidOperationError
+from shared.exceptions import InvalidOperationError
 
 
 class Portfolio:

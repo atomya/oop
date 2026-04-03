@@ -1,8 +1,8 @@
 from decimal import Decimal
 
 from accounts.base.abstract_account import AbstractAccount
-from enums import Currency, AccountStatus
-from exceptions import (
+from shared.enums import Currency, AccountStatus
+from shared.exceptions import (
     AccountFrozenError,
     AccountClosedError,
     InvalidOperationError,

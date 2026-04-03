@@ -1,8 +1,8 @@
 from decimal import Decimal
 
 from accounts.base.bank_account import BankAccount
-from enums import AccountStatus, Currency
-from exceptions import InsufficientFundsError, InvalidOperationError
+from shared.enums import AccountStatus, Currency
+from shared.exceptions import InsufficientFundsError, InvalidOperationError
 
 
 class PremiumAccount(BankAccount):

@@ -7,6 +7,11 @@ class AccountStatus(Enum):
     CLOSED = "closed"
 
 
+class ClientStatus(Enum):
+    ACTIVE = "active"
+    BLOCKED = "blocked"
+
+
 class Currency(Enum):
     RUB = "RUB"
     USD = "USD"

@@ -1,9 +1,15 @@
-# Day 2: Продвинутые типы банковских счетов
+# Day 3: Bank System
 
-Короткий учебный проект по ООП на Python.
+Учебный проект по ООП на Python.  
+Текущий этап включает Day 1, Day 2 и Day 3:
+- базовые счета и статусы;
+- `SavingsAccount`, `PremiumAccount`, `InvestmentAccount`;
+- систему `Client` и управляющий класс `Bank`.
 
 ## Что реализовано
 
+### Счета
+- `BankAccount`
 - `SavingsAccount`
   - `min_balance`
   - `monthly_interest_rate`
@@ -13,21 +19,49 @@
   - `withdrawal_limit`
   - `fixed_fee`
 - `InvestmentAccount`
-  - инвестиционный портфель
-  - активы `stocks`, `bonds`, `etf`
+  - портфель активов `stocks`, `bonds`, `etf`
+  - `invest_in_asset()`
+  - `sell_asset()`
   - `project_yearly_growth()`
 
-## ООП и архитектура
+### Client
+- `full_name`
+- `client_id`
+- `birth_date`
+- вычисляемый `age`
+- `status`
+- `contacts`
+- `account_ids`
+- `pin_code`
+- проверка совершеннолетия с учетом текущей даты, месяца и дня
 
-- инкапсуляция через защищенные поля и `@property`
-- наследование от базового `BankAccount`
-- полиморфизм через переопределение `withdraw()`, `get_account_info()`, `__str__()`
-- абстракция через `AbstractAccount`
-- доменная модель для инвестиционного портфеля
-- структурное логирование вынесено в сервисный слой
-- код подготовлен к unit-тестированию
+### Bank
+- `add_client()`
+- `open_account()`
+- `close_account()`
+- `freeze_account()`
+- `unfreeze_account()`
+- `authenticate_client()`
+- `search_accounts()`
+- `get_total_balance()`
+- `get_clients_ranking()`
 
-## Структура
+## Защита и правила
+
+- после 3 неверных попыток входа клиент блокируется;
+- подозрительные действия пишутся в журнал банка;
+- операции банка запрещены с `00:00` до `05:00`;
+- валидация входных данных сделана до изменения состояния объектов;
+- для счетов и клиентов используется короткий уникальный ID;
+- в `__str__()` у счетов показываются последние 4 цифры номера.
+
+## Архитектура
+
+- `accounts/` — иерархия счетов
+- `domain/` — верхнеуровневые доменные сущности `Bank` и `Client`
+- `shared/` — общие `enums` и `exceptions`
+- `services/` — структурное логирование и application layer
+- `tests/` — unit-тесты
 
 ```text
 accounts/
@@ -42,6 +76,12 @@ accounts/
       portfolio.py
       portfolio_position.py
       rules.py
+domain/
+  bank.py
+  client.py
+shared/
+  enums.py
+  exceptions.py
 services/
   account_audit_logger.py
   account_service.py
@@ -52,13 +92,13 @@ demo.py
 
 ## Быстрая проверка
 
-Запуск демо:
+Демо:
 
 ```bash
 python3 demo.py
 ```
 
-Запуск тестов:
+Тесты:
 
 ```bash
 python3 -m unittest discover -s tests -p 'test_*.py'
@@ -66,10 +106,11 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 
 ## Что показывает демо
 
-- создание обычного, накопительного, премиального и инвестиционного счетов
-- пополнение и снятие средств
-- проценты по `SavingsAccount`
-- овердрафт и комиссия в `PremiumAccount`
-- инвестиции в `stocks`, `bonds`, `etf`
-- прогноз годового роста портфеля
-- обработку доменных ошибок
+- операции по разным типам счетов;
+- проценты по накопительному счету;
+- овердрафт и комиссия в премиальном счете;
+- инвестиции и прогноз роста портфеля;
+- создание клиента и открытие счета через `Bank`;
+- аутентификацию по `pin_code`;
+- заморозку и разморозку счета;
+- обработку доменных ошибок.
