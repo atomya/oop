@@ -1,9 +1,9 @@
 from accounts import InvestmentAccount, SavingsAccount
-from services.account_audit_logger import AccountAuditLogger
+from audit.base_audit_logger import BaseAuditLogger
 
 
 class AccountService:
-    def __init__(self, audit_logger: AccountAuditLogger):
+    def __init__(self, audit_logger: BaseAuditLogger):
         self._audit_logger = audit_logger
 
     def deposit(self, account, amount) -> None:

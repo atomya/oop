@@ -2,28 +2,38 @@ from abc import ABC, abstractmethod
 from decimal import Decimal
 from shared.enums import AccountStatus
 from shared.exceptions import AccountClosedError, InvalidOperationError
-from utils.unique_id import mask_numeric_suffix, prepare_unique_id
+from utils.unique_id import mask_numeric_suffix, prepare_unique_id, reserve_unique_id
+from utils.validation import require_enum
 
 
 class AbstractAccount(ABC):
     _used_account_ids: set[str] = set()
 
     def __init__(self, owner: str, account_id: str | None = None, status: AccountStatus = AccountStatus.ACTIVE):
-        self._account_id = prepare_unique_id(
+        validated_status = require_enum(status, AccountStatus, "Status", article="an")
+        prepared_account_id = prepare_unique_id(
             account_id,
             used_ids=self._used_account_ids,
             label="Account ID",
             min_digits=4,
         )
+
         self._owner = owner
         self._balance = Decimal("0.00")
-        self._status = self._validate_status(status)
+        self._status = validated_status
+        self._account_id = prepared_account_id
+        self._account_id_reserved = False
 
-    @staticmethod
-    def _validate_status(status: AccountStatus) -> AccountStatus:
-        if not isinstance(status, AccountStatus):
-            raise InvalidOperationError("Status must be an AccountStatus enum")
-        return status
+    def _reserve_account_id(self) -> None:
+        if self._account_id_reserved:
+            return
+
+        reserve_unique_id(
+            self._account_id,
+            used_ids=self._used_account_ids,
+            label="Account ID",
+        )
+        self._account_id_reserved = True
 
     def _masked_account_id(self) -> str:
         return mask_numeric_suffix(self._account_id)

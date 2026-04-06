@@ -47,7 +47,6 @@ def reserve_unique_id(entity_id: str, *, used_ids: set[str], label: str) -> str:
 def generate_unique_id(
     *,
     used_ids: set[str],
-    label: str,
     length: int = 8,
     min_digits: int = 0,
 ) -> str:
@@ -56,10 +55,8 @@ def generate_unique_id(
         if len(extract_digits(candidate)) < min_digits:
             continue
 
-        try:
-            return reserve_unique_id(candidate, used_ids=used_ids, label=label)
-        except InvalidOperationError:
-            continue
+        if candidate not in used_ids:
+            return candidate
 
 
 def prepare_unique_id(
@@ -74,15 +71,13 @@ def prepare_unique_id(
     if raw_id is None:
         return generate_unique_id(
             used_ids=used_ids,
-            label=label,
             length=length,
             min_digits=min_digits,
         )
 
-    validated_id = validate_unique_id(
+    return validate_unique_id(
         raw_id,
         label=label,
         min_digits=min_digits,
         allow_int=allow_int,
     )
-    return reserve_unique_id(validated_id, used_ids=used_ids, label=label)

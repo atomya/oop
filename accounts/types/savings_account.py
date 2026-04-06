@@ -3,6 +3,7 @@ from decimal import Decimal
 from accounts.base.bank_account import BankAccount
 from shared.enums import AccountStatus, Currency
 from shared.exceptions import InsufficientFundsError
+from utils.validation import require_non_negative_decimal, require_positive_decimal
 
 
 class SavingsAccount(BankAccount):
@@ -16,11 +17,12 @@ class SavingsAccount(BankAccount):
         status=AccountStatus.ACTIVE,
     ):
         super().__init__(owner, currency, account_id=account_id, status=status)
-        self._min_balance = self._validate_non_negative_decimal(min_balance, "Minimum balance")
-        self._monthly_interest_rate = self._validate_non_negative_decimal(
+        self._min_balance = require_non_negative_decimal(min_balance, "Minimum balance")
+        self._monthly_interest_rate = require_non_negative_decimal(
             monthly_interest_rate,
             "Monthly interest rate",
         )
+        self._reserve_account_id()
 
     @property
     def min_balance(self) -> Decimal:
@@ -31,7 +33,7 @@ class SavingsAccount(BankAccount):
         return self._monthly_interest_rate
 
     def withdraw(self, amount):
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
 
         projected_balance = self._balance - amount

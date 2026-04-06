@@ -18,3 +18,23 @@ class Currency(Enum):
     EUR = "EUR"
     KZT = "KZT"
     CNY = "CNY"
+
+
+class TransactionType(Enum):
+    INTERNAL_TRANSFER = "internal_transfer"
+    EXTERNAL_TRANSFER = "external_transfer"
+
+
+class TransactionStatus(Enum):
+    PENDING = "pending"
+    SCHEDULED = "scheduled"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+class TransactionPriority(Enum):
+    LOW = 1
+    NORMAL = 2
+    HIGH = 3

@@ -5,20 +5,16 @@ from shared.enums import Currency, AccountStatus
 from shared.exceptions import (
     AccountFrozenError,
     AccountClosedError,
-    InvalidOperationError,
     InsufficientFundsError,
 )
+from utils.validation import require_enum, require_non_negative_decimal, require_positive_decimal
 
 class BankAccount(AbstractAccount):
     def __init__(self, owner, currency: Currency, account_id=None, status=AccountStatus.ACTIVE):
         super().__init__(owner, account_id, status=status)
-        self._currency = self._validate_currency(currency)
-
-    @staticmethod
-    def _validate_currency(currency: Currency) -> Currency:
-        if not isinstance(currency, Currency):
-            raise InvalidOperationError("Currency must be a Currency enum")
-        return currency
+        self._currency = require_enum(currency, Currency, "Currency")
+        if type(self) is BankAccount:
+            self._reserve_account_id()
 
     @property
     def account_id(self) -> str:
@@ -40,33 +36,6 @@ class BankAccount(AbstractAccount):
     def status(self) -> AccountStatus:
         return self._status
 
-    def _validate_amount(self, amount):
-        if isinstance(amount, bool):
-            raise InvalidOperationError("Amount cannot be boolean")
-
-        if not isinstance(amount, (int, float, Decimal)):
-            raise InvalidOperationError("Amount must be numeric")
-
-        amount = Decimal(str(amount))
-
-        if amount <= 0:
-            raise InvalidOperationError("Amount must be positive")
-
-        return amount
-
-    def _validate_non_negative_decimal(self, value, label: str) -> Decimal:
-        if isinstance(value, bool):
-            raise InvalidOperationError(f"{label} cannot be boolean")
-
-        if not isinstance(value, (int, float, Decimal)):
-            raise InvalidOperationError(f"{label} must be numeric")
-
-        decimal_value = Decimal(str(value))
-        if decimal_value < 0:
-            raise InvalidOperationError(f"{label} cannot be negative")
-
-        return decimal_value
-
     def _build_account_info(self, account_type: str) -> dict:
         return {
             "type": account_type,
@@ -84,12 +53,12 @@ class BankAccount(AbstractAccount):
             raise AccountClosedError
 
     def deposit(self, amount):
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
         self._balance += amount
 
     def withdraw(self, amount):
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
 
         if amount > self._balance:

@@ -3,7 +3,8 @@ from typing import Callable
 
 from shared.enums import ClientStatus
 from shared.exceptions import InvalidOperationError
-from utils.unique_id import prepare_unique_id
+from utils.unique_id import prepare_unique_id, reserve_unique_id
+from utils.validation import require_enum, require_non_empty_string
 
 
 class Client:
@@ -19,28 +20,35 @@ class Client:
         status: ClientStatus = ClientStatus.ACTIVE,
         today_provider: Callable[[], date] | None = None,
     ):
-        self._today_provider = today_provider or date.today
-        self._full_name = self._validate_full_name(full_name)
-        self._birth_date = self._validate_birth_date(birth_date)
-        self._ensure_adult(self._birth_date)
-        self._contacts = self._validate_contacts(contacts)
-        self._pin_code = self._validate_pin_code(pin_code)
-        self._client_id = prepare_unique_id(
+        validated_full_name = require_non_empty_string(full_name, "Client full name")
+        validated_birth_date = self._validate_birth_date(birth_date)
+        validated_contacts = self._validate_contacts(contacts)
+        validated_pin_code = self._validate_pin_code(pin_code)
+        validated_status = require_enum(status, ClientStatus, "Client status")
+        prepared_client_id = prepare_unique_id(
             client_id,
             used_ids=self._used_client_ids,
             label="Client ID",
             allow_int=False,
         )
-        self._status = self._validate_status(status)
+
+        self._today_provider = today_provider or date.today
+        self._ensure_adult(validated_birth_date)
+        reserve_unique_id(
+            prepared_client_id,
+            used_ids=self._used_client_ids,
+            label="Client ID",
+        )
+
+        self._full_name = validated_full_name
+        self._birth_date = validated_birth_date
+        self._contacts = validated_contacts
+        self._pin_code = validated_pin_code
+        self._client_id = prepared_client_id
+        self._status = validated_status
         self._account_ids: list[str] = []
         self._failed_login_attempts = 0
         self._suspicious_actions: list[str] = []
-
-    @staticmethod
-    def _validate_full_name(full_name: str) -> str:
-        if not isinstance(full_name, str) or not full_name.strip():
-            raise InvalidOperationError("Client full name must be a non-empty string")
-        return full_name.strip()
 
     @staticmethod
     def _validate_birth_date(birth_date) -> date:
@@ -69,11 +77,9 @@ class Client:
 
         normalized_contacts = {}
         for contact_type, value in contacts.items():
-            if not isinstance(contact_type, str) or not contact_type.strip():
-                raise InvalidOperationError("Contact type must be a non-empty string")
-            if not isinstance(value, str) or not value.strip():
-                raise InvalidOperationError("Contact value must be a non-empty string")
-            normalized_contacts[contact_type.strip()] = value.strip()
+            normalized_contact_type = require_non_empty_string(contact_type, "Contact type")
+            normalized_value = require_non_empty_string(value, "Contact value")
+            normalized_contacts[normalized_contact_type] = normalized_value
 
         return normalized_contacts
 
@@ -91,12 +97,6 @@ class Client:
         if not normalized_pin_code:
             raise InvalidOperationError("PIN code cannot be empty")
         return normalized_pin_code
-
-    @staticmethod
-    def _validate_status(status: ClientStatus) -> ClientStatus:
-        if not isinstance(status, ClientStatus):
-            raise InvalidOperationError("Client status must be a ClientStatus enum")
-        return status
 
     @property
     def client_id(self) -> str:

@@ -6,28 +6,17 @@ from accounts import BankAccount
 from domain.client import Client
 from shared.enums import AccountStatus, ClientStatus, Currency
 from shared.exceptions import InvalidOperationError
+from utils.validation import require_enum, require_non_empty_string
 
 
 class Bank:
     def __init__(self, name: str, now_provider: Callable[[], datetime] | None = None):
-        self._name = self._validate_name(name)
+        self._name = require_non_empty_string(name, "Bank name")
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
         self._suspicious_actions: list[dict] = []
         self._now_provider = now_provider or datetime.now
-
-    @staticmethod
-    def _validate_name(name: str) -> str:
-        if not isinstance(name, str) or not name.strip():
-            raise InvalidOperationError("Bank name must be a non-empty string")
-        return name.strip()
-
-    @staticmethod
-    def _validate_identifier(value, label: str) -> str:
-        if not isinstance(value, str) or not value.strip():
-            raise InvalidOperationError(f"{label} must be a non-empty string")
-        return value.strip()
 
     @staticmethod
     def _validate_account_type(account_type, *, allow_none: bool = False):
@@ -39,28 +28,10 @@ class Bank:
         return account_type
 
     @staticmethod
-    def _validate_account_status(status: AccountStatus | None) -> AccountStatus | None:
-        if status is None:
-            return None
-        if not isinstance(status, AccountStatus):
-            raise InvalidOperationError("Status must be an AccountStatus enum")
-        return status
-
-    @staticmethod
-    def _validate_currency(currency: Currency | None) -> Currency | None:
-        if currency is None:
-            return None
-        if not isinstance(currency, Currency):
-            raise InvalidOperationError("Currency must be a Currency enum")
-        return currency
-
-    @staticmethod
     def _validate_query(query: str | None) -> str | None:
         if query is None:
             return None
-        if not isinstance(query, str) or not query.strip():
-            raise InvalidOperationError("Search query must be a non-empty string")
-        return query.strip().lower()
+        return require_non_empty_string(query, "Search query").lower()
 
     @staticmethod
     def _validate_only_active(only_active) -> bool:
@@ -84,18 +55,35 @@ class Bank:
         return 0 <= current_hour < 5
 
     def _get_client(self, client_id: str) -> Client:
-        client_id = self._validate_identifier(client_id, "Client ID")
+        client_id = require_non_empty_string(client_id, "Client ID")
         client = self._clients.get(client_id)
         if client is None:
             raise InvalidOperationError("Client not found")
         return client
 
     def _get_account(self, account_id: str) -> BankAccount:
-        account_id = self._validate_identifier(account_id, "Account ID")
+        account_id = require_non_empty_string(account_id, "Account ID")
         account = self._accounts.get(account_id)
         if account is None:
             raise InvalidOperationError("Account not found")
         return account
+
+    def get_account(self, account_id: str) -> BankAccount:
+        return self._get_account(account_id)
+
+    def has_account(self, account_id: str) -> bool:
+        try:
+            self._get_account(account_id)
+        except InvalidOperationError:
+            return False
+        return True
+
+    def get_account_owner(self, account_id: str) -> Client:
+        account_id = require_non_empty_string(account_id, "Account ID")
+        client_id = self._account_owners.get(account_id)
+        if client_id is None:
+            raise InvalidOperationError("Account owner not found")
+        return self._get_client(client_id)
 
     def _mark_suspicious_action(self, action: str, client: Client | None = None, **details) -> None:
         timestamp = self._now().isoformat(timespec="seconds")
@@ -115,9 +103,14 @@ class Bank:
             self._mark_suspicious_action(action, client=client, reason="restricted_hours", **details)
             raise InvalidOperationError("Operations are not allowed between 00:00 and 05:00")
 
+    def ensure_operation_allowed(self, action: str, client_id: str | None = None, **details) -> None:
+        client = self._get_client(client_id) if client_id is not None else None
+        self._ensure_operation_allowed(action, client=client, **details)
+
     def add_client(self, client: Client) -> None:
         if not isinstance(client, Client):
             raise InvalidOperationError("Bank can only register Client instances")
+        self._ensure_operation_allowed("add_client", client=client)
         if client.client_id in self._clients:
             raise InvalidOperationError("Client ID must be unique")
         self._clients[client.client_id] = client
@@ -161,6 +154,7 @@ class Bank:
 
     def authenticate_client(self, client_id: str, pin_code) -> Client:
         client = self._get_client(client_id)
+        self._ensure_operation_allowed("authenticate_client", client=client)
 
         if client.status == ClientStatus.BLOCKED:
             self._mark_suspicious_action("authenticate_client", client=client, reason="blocked_client")
@@ -199,8 +193,8 @@ class Bank:
         account_type: type[BankAccount] | None = None,
     ) -> list[BankAccount]:
         query = self._validate_query(query)
-        status = self._validate_account_status(status)
-        currency = self._validate_currency(currency)
+        status = require_enum(status, AccountStatus, "Status", allow_none=True, article="an")
+        currency = require_enum(currency, Currency, "Currency", allow_none=True)
         account_type = self._validate_account_type(account_type, allow_none=True)
         accounts = list(self._accounts.values())
 

@@ -1,5 +1,5 @@
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import Mock, patch
 
@@ -9,6 +9,10 @@ from accounts import (
     PremiumAccount,
     SavingsAccount,
 )
+from audit.account_audit_logger import AccountAuditLogger
+from audit.base_audit_logger import BaseAuditLogger
+from audit.transaction_audit_logger import TransactionAuditLogger
+from accounts.types.investment.portfolio_position import PortfolioPosition
 from domain.bank import Bank
 from domain.client import Client
 from shared.enums import AccountStatus, ClientStatus, Currency
@@ -18,17 +22,23 @@ from shared.exceptions import (
     InsufficientFundsError,
     InvalidOperationError,
 )
-from accounts.types.investment.portfolio_position import PortfolioPosition
-from services.account_audit_logger import AccountAuditLogger
 from services.account_service import AccountService
+from services.transaction_processor import TransactionProcessor
+from shared.enums import TransactionPriority, TransactionStatus, TransactionType
+from shared.exceptions import TemporaryProcessingError
+from transactions.transaction import Transaction
+from transactions.transaction_queue import TransactionQueue
 
 
-class FakeAuditLogger:
+class FakeAuditLogger(BaseAuditLogger):
     def __init__(self):
         self.entries = []
 
-    def log(self, event: str, account, **extra) -> None:
-        self.entries.append((event, account, extra))
+    def _build_payload(self, entity) -> dict:
+        return {}
+
+    def log(self, event: str, entity, **extra) -> None:
+        self.entries.append((event, entity, extra))
 
 
 def build_client(
@@ -49,6 +59,55 @@ def build_client(
         status=status,
         today_provider=today_provider,
     )
+
+
+def build_transaction_bank(current_time: dict[str, datetime]):
+    bank = Bank("Transaction Bank", now_provider=lambda: current_time["value"])
+    audit_logger = FakeAuditLogger()
+    account_service = AccountService(audit_logger)
+
+    alice = build_client()
+    bob = build_client()
+    carol = build_client()
+    dave = build_client()
+    emma = build_client()
+
+    for client in (alice, bob, carol, dave, emma):
+        bank.add_client(client)
+
+    alice_account = bank.open_account(alice.client_id, BankAccount, currency=Currency.USD)
+    bob_account = bank.open_account(
+        bob.client_id,
+        SavingsAccount,
+        currency=Currency.EUR,
+        min_balance=0,
+        monthly_interest_rate=0.01,
+    )
+    carol_account = bank.open_account(
+        carol.client_id,
+        PremiumAccount,
+        currency=Currency.USD,
+        overdraft_limit=500,
+        withdrawal_limit=1000,
+        fixed_fee=10,
+    )
+    dave_account = bank.open_account(dave.client_id, BankAccount, currency=Currency.USD)
+    emma_account = bank.open_account(emma.client_id, BankAccount, currency=Currency.KZT)
+
+    account_service.deposit(alice_account, 2000)
+    account_service.deposit(carol_account, 50)
+    bank.freeze_account(dave_account.account_id)
+
+    return {
+        "bank": bank,
+        "audit_logger": audit_logger,
+        "account_service": account_service,
+        "alice_account": alice_account,
+        "bob_account": bob_account,
+        "carol_account": carol_account,
+        "dave_account": dave_account,
+        "emma_account": emma_account,
+    }
 
 
 class BankAccountTestCase(unittest.TestCase):
@@ -108,6 +167,31 @@ class AccountConfigValidationTestCase(unittest.TestCase):
 
         with self.assertRaises(InvalidOperationError):
             BankAccount("Alice", Currency.USD, account_id="")
+
+    def test_failed_account_validation_does_not_burn_account_id(self):
+        with self.assertRaises(InvalidOperationError):
+            BankAccount("Alice", "USD", account_id="ID12AB34")
+
+        valid_account = BankAccount("Alice", Currency.USD, account_id="ID12AB34")
+        self.assertEqual(valid_account.account_id, "ID12AB34")
+
+        with self.assertRaises(InvalidOperationError):
+            SavingsAccount(
+                "Bob",
+                Currency.EUR,
+                min_balance="bad",
+                monthly_interest_rate=0.03,
+                account_id="ID56CD78",
+            )
+
+        valid_savings = SavingsAccount(
+            "Bob",
+            Currency.EUR,
+            min_balance=100,
+            monthly_interest_rate=0.03,
+            account_id="ID56CD78",
+        )
+        self.assertEqual(valid_savings.account_id, "ID56CD78")
 
     def test_constructor_rejects_duplicate_account_id(self):
         BankAccount("Alice", Currency.USD, account_id="AB12CD34")
@@ -289,6 +373,19 @@ class ClientTestCase(unittest.TestCase):
         with self.assertRaises(InvalidOperationError):
             build_client(client_id=True)
 
+    def test_failed_client_validation_does_not_burn_client_id(self):
+        with self.assertRaises(InvalidOperationError):
+            build_client(client_id="client-201", status="blocked")
+
+        valid_client = build_client(client_id="client-201")
+        self.assertEqual(valid_client.client_id, "client-201")
+
+        with self.assertRaises(InvalidOperationError):
+            build_client(client_id="client-202", contacts={})
+
+        valid_second_client = build_client(client_id="client-202")
+        self.assertEqual(valid_second_client.client_id, "client-202")
+
     def test_client_rejects_invalid_status_contacts_and_pin_code(self):
         with self.assertRaises(InvalidOperationError):
             build_client(status="blocked")
@@ -393,14 +490,34 @@ class BankTestCase(unittest.TestCase):
 
     def test_bank_restricts_night_operations_and_marks_them_suspicious(self):
         bank = Bank("Night Bank", now_provider=lambda: datetime(2026, 4, 3, 1, 30))
-        client = build_client(client_id="client-104")
-        bank.add_client(client)
+        client = build_client(client_id="client-109")
 
         with self.assertRaises(InvalidOperationError):
-            bank.open_account(client.client_id, BankAccount, currency=Currency.USD)
+            bank.add_client(client)
 
         self.assertEqual(len(bank.suspicious_actions), 1)
+        self.assertEqual(bank.suspicious_actions[0]["action"], "add_client")
         self.assertEqual(bank.suspicious_actions[0]["reason"], "restricted_hours")
+
+    def test_bank_restricts_night_authentication_and_account_operations(self):
+        current_time = {"value": datetime(2026, 4, 3, 10, 0)}
+        day_bank = Bank("Day Bank", now_provider=lambda: current_time["value"])
+        client = build_client(client_id="client-110")
+        day_bank.add_client(client)
+
+        current_time["value"] = datetime(2026, 4, 3, 1, 30)
+
+        with self.assertRaises(InvalidOperationError):
+            day_bank.authenticate_client(client.client_id, "1234")
+
+        with self.assertRaises(InvalidOperationError):
+            day_bank.open_account(client.client_id, BankAccount, currency=Currency.USD)
+
+        self.assertEqual(len(day_bank.suspicious_actions), 2)
+        self.assertEqual(day_bank.suspicious_actions[0]["action"], "authenticate_client")
+        self.assertEqual(day_bank.suspicious_actions[0]["reason"], "restricted_hours")
+        self.assertEqual(day_bank.suspicious_actions[1]["action"], "open_account")
+        self.assertEqual(day_bank.suspicious_actions[1]["reason"], "restricted_hours")
 
     def test_bank_searches_accounts_and_builds_ranking(self):
         bank = Bank("Ranking Bank", now_provider=lambda: datetime(2026, 4, 3, 12, 0))
@@ -513,7 +630,7 @@ class PortfolioPositionTestCase(unittest.TestCase):
 
 class AccountAuditLoggerTestCase(unittest.TestCase):
     def test_account_audit_logger_writes_structured_log(self):
-        with patch("services.account_audit_logger.logging.getLogger") as mock_get_logger:
+        with patch("audit.base_audit_logger.logging.getLogger") as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
 
@@ -523,6 +640,476 @@ class AccountAuditLoggerTestCase(unittest.TestCase):
             audit_logger.log("deposit", account, amount=500)
 
             mock_get_logger.assert_called_once_with("audit")
+            mock_logger.info.assert_called_once()
+
+
+class TransactionQueueTestCase(unittest.TestCase):
+    def test_transaction_validation_failure_does_not_burn_transaction_id(self):
+        with self.assertRaises(InvalidOperationError):
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=10,
+                currency="USD",
+                sender="sender-invalid",
+                recipient="recipient-invalid",
+                transaction_id="tx-entity-001",
+                created_at=datetime(2026, 4, 5, 12, 0),
+            )
+
+        valid_transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=10,
+            currency=Currency.USD,
+            sender="sender-valid",
+            recipient="recipient-valid",
+            transaction_id="tx-entity-001",
+            created_at=datetime(2026, 4, 5, 12, 0),
+        )
+
+        self.assertEqual(valid_transaction.transaction_id, "tx-entity-001")
+
+    def test_transaction_queue_prioritizes_delays_and_can_cancel(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+
+        low_priority = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=10,
+            currency=Currency.USD,
+            sender="sender-1",
+            recipient="external-1",
+            priority=TransactionPriority.LOW,
+            transaction_id="tx-low-001",
+            created_at=current_time["value"],
+        )
+        high_priority = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=10,
+            currency=Currency.USD,
+            sender="sender-2",
+            recipient="external-2",
+            priority=TransactionPriority.HIGH,
+            transaction_id="tx-high-001",
+            created_at=current_time["value"],
+        )
+        delayed_transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=10,
+            currency=Currency.USD,
+            sender="sender-3",
+            recipient="external-3",
+            priority=TransactionPriority.HIGH,
+            scheduled_for=current_time["value"] + timedelta(hours=1),
+            transaction_id="tx-delay-001",
+            created_at=current_time["value"],
+        )
+        canceled_transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=10,
+            currency=Currency.USD,
+            sender="sender-4",
+            recipient="external-4",
+            transaction_id="tx-cancel-001",
+            created_at=current_time["value"],
+        )
+
+        for transaction in (low_priority, high_priority, delayed_transaction, canceled_transaction):
+            queue.add(transaction)
+
+        queue.cancel(canceled_transaction.transaction_id)
+
+        pending_snapshot = queue.pending_transactions()
+        self.assertIsInstance(pending_snapshot[0], dict)
+
+        first = queue.get_next_ready(current_time["value"])
+        queue.remove(first.transaction_id)
+        second = queue.get_next_ready(current_time["value"])
+        queue.remove(second.transaction_id)
+        third = queue.get_next_ready(current_time["value"])
+
+        self.assertEqual(first.transaction_id, high_priority.transaction_id)
+        self.assertEqual(second.transaction_id, low_priority.transaction_id)
+        self.assertIsNone(third)
+        self.assertEqual(canceled_transaction.status, TransactionStatus.CANCELED)
+
+        current_time["value"] = current_time["value"] + timedelta(hours=2)
+        delayed_ready = queue.get_next_ready(current_time["value"])
+        queue.remove(delayed_ready.transaction_id)
+        self.assertEqual(delayed_ready.transaction_id, delayed_transaction.transaction_id)
+        self.assertEqual(len(queue), 0)
+
+    def test_transaction_queue_uses_fair_priority_cycle(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+
+        transactions = [
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=10,
+                currency=Currency.USD,
+                sender="sender-high-1",
+                recipient="external-high-1",
+                priority=TransactionPriority.HIGH,
+                transaction_id="tx-cycle-high-001",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=10,
+                currency=Currency.USD,
+                sender="sender-high-2",
+                recipient="external-high-2",
+                priority=TransactionPriority.HIGH,
+                transaction_id="tx-cycle-high-002",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=10,
+                currency=Currency.USD,
+                sender="sender-normal-1",
+                recipient="external-normal-1",
+                priority=TransactionPriority.NORMAL,
+                transaction_id="tx-cycle-normal-001",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=10,
+                currency=Currency.USD,
+                sender="sender-normal-2",
+                recipient="external-normal-2",
+                priority=TransactionPriority.NORMAL,
+                transaction_id="tx-cycle-normal-002",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=10,
+                currency=Currency.USD,
+                sender="sender-low-1",
+                recipient="external-low-1",
+                priority=TransactionPriority.LOW,
+                transaction_id="tx-cycle-low-001",
+                created_at=current_time["value"],
+            ),
+        ]
+
+        for transaction in transactions:
+            queue.add(transaction)
+
+        pop_order = []
+        while len(queue) > 0:
+            next_transaction = queue.get_next_ready(current_time["value"])
+            pop_order.append(next_transaction.transaction_id)
+            queue.remove(next_transaction.transaction_id)
+
+        self.assertEqual(
+            pop_order,
+            [
+                "tx-cycle-high-001",
+                "tx-cycle-normal-001",
+                "tx-cycle-high-002",
+                "tx-cycle-normal-002",
+                "tx-cycle-low-001",
+            ],
+        )
+
+
+class TransactionProcessorTestCase(unittest.TestCase):
+    def test_transaction_processor_handles_conversion_external_fee_and_failures(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        alice_account = transaction_setup["alice_account"]
+        bob_account = transaction_setup["bob_account"]
+        dave_account = transaction_setup["dave_account"]
+
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+
+        internal_transaction = Transaction(
+            transaction_type=TransactionType.INTERNAL_TRANSFER,
+            amount=100,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient=bob_account.account_id,
+            transaction_id="tx-proc-001",
+            created_at=current_time["value"],
+        )
+        external_transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=50,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient="external-recipient-1",
+            transaction_id="tx-proc-002",
+            created_at=current_time["value"],
+        )
+        frozen_failure = Transaction(
+            transaction_type=TransactionType.INTERNAL_TRANSFER,
+            amount=20,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient=dave_account.account_id,
+            transaction_id="tx-proc-003",
+            created_at=current_time["value"],
+        )
+        insufficient_failure = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=5000,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient="external-recipient-2",
+            transaction_id="tx-proc-004",
+            created_at=current_time["value"],
+        )
+
+        for transaction in (
+            internal_transaction,
+            external_transaction,
+            frozen_failure,
+            insufficient_failure,
+        ):
+            queue.add(transaction)
+
+        processed_transactions = processor.process_all(queue)
+
+        self.assertEqual(len(processed_transactions), 4)
+        self.assertEqual(internal_transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(external_transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(frozen_failure.status, TransactionStatus.FAILED)
+        self.assertEqual(insufficient_failure.status, TransactionStatus.FAILED)
+        self.assertEqual(bob_account.balance, Decimal("92.00"))
+        self.assertEqual(alice_account.balance, Decimal("1849.00"))
+        self.assertEqual(external_transaction.fee, Decimal("1.00"))
+        self.assertGreaterEqual(len(audit_logger.entries), 4)
+
+    def test_transaction_processor_retries_temporary_failures_without_losing_money(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        alice_account = transaction_setup["alice_account"]
+
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+            retry_delay_minutes=5,
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+        transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=30,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient="external-recipient-retry",
+            transaction_id="tx-retry-001",
+            created_at=current_time["value"],
+        )
+        queue.add(transaction)
+
+        attempts = {"count": 0}
+
+        def flaky_send(*_args, **_kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise TemporaryProcessingError("Gateway unavailable")
+
+        processor._send_external_transfer = flaky_send
+
+        first_pass = processor.process_all(queue)
+        self.assertEqual(len(first_pass), 1)
+        self.assertEqual(transaction.status, TransactionStatus.SCHEDULED)
+        self.assertEqual(transaction.retry_count, 1)
+        self.assertEqual(alice_account.balance, Decimal("2000.00"))
+
+        current_time["value"] = current_time["value"] + timedelta(minutes=6)
+        second_pass = processor.process_all(queue)
+        self.assertEqual(len(second_pass), 1)
+        self.assertEqual(transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(alice_account.balance, Decimal("1969.40"))
+
+    def test_transaction_processor_executes_ten_queued_transactions(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        alice_account = transaction_setup["alice_account"]
+        bob_account = transaction_setup["bob_account"]
+        carol_account = transaction_setup["carol_account"]
+        dave_account = transaction_setup["dave_account"]
+        emma_account = transaction_setup["emma_account"]
+
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+            retry_delay_minutes=5,
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+
+        transactions = [
+            Transaction(
+                transaction_type=TransactionType.INTERNAL_TRANSFER,
+                amount=100,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient=bob_account.account_id,
+                priority=TransactionPriority.HIGH,
+                transaction_id="tx-batch-001",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=100,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient="external-batch-001",
+                priority=TransactionPriority.NORMAL,
+                transaction_id="tx-batch-002",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.INTERNAL_TRANSFER,
+                amount=10,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient=emma_account.account_id,
+                transaction_id="tx-batch-003",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.INTERNAL_TRANSFER,
+                amount=20,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient=dave_account.account_id,
+                transaction_id="tx-batch-004",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=5000,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient="external-batch-002",
+                transaction_id="tx-batch-005",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=200,
+                currency=Currency.USD,
+                sender=carol_account.account_id,
+                recipient="external-batch-003",
+                transaction_id="tx-batch-006",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.INTERNAL_TRANSFER,
+                amount=50,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient=bob_account.account_id,
+                scheduled_for=current_time["value"] + timedelta(hours=1),
+                transaction_id="tx-batch-007",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=25,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient="external-batch-004",
+                transaction_id="tx-batch-008",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=30,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient="external-batch-retry",
+                priority=TransactionPriority.HIGH,
+                transaction_id="tx-batch-009",
+                created_at=current_time["value"],
+            ),
+            Transaction(
+                transaction_type=TransactionType.INTERNAL_TRANSFER,
+                amount=15,
+                currency=Currency.USD,
+                sender=alice_account.account_id,
+                recipient="missing-account-id",
+                transaction_id="tx-batch-010",
+                created_at=current_time["value"],
+            ),
+        ]
+
+        for transaction in transactions:
+            queue.add(transaction)
+
+        queue.cancel("tx-batch-008")
+
+        attempts = {"tx-batch-009": 0}
+
+        def flaky_send(transaction, amount):
+            if transaction.transaction_id == "tx-batch-009":
+                attempts["tx-batch-009"] += 1
+            if transaction.transaction_id == "tx-batch-009" and attempts["tx-batch-009"] == 1:
+                raise TemporaryProcessingError("Temporary gateway timeout")
+
+        processor._send_external_transfer = flaky_send
+
+        first_batch = processor.process_all(queue)
+        self.assertEqual(len(first_batch), 8)
+        self.assertEqual(transactions[8].status, TransactionStatus.SCHEDULED)
+        self.assertEqual(transactions[6].status, TransactionStatus.SCHEDULED)
+        self.assertEqual(transactions[7].status, TransactionStatus.CANCELED)
+
+        current_time["value"] = current_time["value"] + timedelta(hours=1, minutes=10)
+        second_batch = processor.process_all(queue)
+        self.assertEqual(len(second_batch), 2)
+        self.assertEqual(len(queue), 0)
+
+        completed = [transaction for transaction in transactions if transaction.status == TransactionStatus.COMPLETED]
+        failed = [transaction for transaction in transactions if transaction.status == TransactionStatus.FAILED]
+        canceled = [transaction for transaction in transactions if transaction.status == TransactionStatus.CANCELED]
+
+        self.assertEqual(len(completed), 6)
+        self.assertEqual(len(failed), 3)
+        self.assertEqual(len(canceled), 1)
+        self.assertEqual(alice_account.balance, Decimal("1707.40"))
+        self.assertEqual(bob_account.balance, Decimal("138.00"))
+        self.assertEqual(emma_account.balance, Decimal("4600.00"))
+        self.assertEqual(carol_account.balance, Decimal("-164.00"))
+
+
+class TransactionAuditLoggerTestCase(unittest.TestCase):
+    def test_transaction_audit_logger_writes_structured_log(self):
+        with patch("audit.base_audit_logger.logging.getLogger") as mock_get_logger:
+            mock_logger = Mock()
+            mock_get_logger.return_value = mock_logger
+
+            audit_logger = TransactionAuditLogger("transaction_audit")
+            transaction = Transaction(
+                transaction_type=TransactionType.EXTERNAL_TRANSFER,
+                amount=100,
+                currency=Currency.USD,
+                sender="sender-logger",
+                recipient="recipient-logger",
+                transaction_id="tx-log-001",
+                created_at=datetime(2026, 4, 5, 12, 0),
+            )
+            audit_logger.log("transaction_created", transaction, note="demo")
+
+            mock_get_logger.assert_called_once_with("transaction_audit")
             mock_logger.info.assert_called_once()
 
 

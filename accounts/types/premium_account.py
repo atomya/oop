@@ -3,6 +3,7 @@ from decimal import Decimal
 from accounts.base.bank_account import BankAccount
 from shared.enums import AccountStatus, Currency
 from shared.exceptions import InsufficientFundsError, InvalidOperationError
+from utils.validation import require_non_negative_decimal, require_positive_decimal
 
 
 class PremiumAccount(BankAccount):
@@ -17,9 +18,10 @@ class PremiumAccount(BankAccount):
         status=AccountStatus.ACTIVE,
     ):
         super().__init__(owner, currency, account_id=account_id, status=status)
-        self._overdraft_limit = self._validate_non_negative_decimal(overdraft_limit, "Overdraft limit")
-        self._withdrawal_limit = self._validate_non_negative_decimal(withdrawal_limit, "Withdrawal limit")
-        self._fixed_fee = self._validate_non_negative_decimal(fixed_fee, "Fixed fee")
+        self._overdraft_limit = require_non_negative_decimal(overdraft_limit, "Overdraft limit")
+        self._withdrawal_limit = require_non_negative_decimal(withdrawal_limit, "Withdrawal limit")
+        self._fixed_fee = require_non_negative_decimal(fixed_fee, "Fixed fee")
+        self._reserve_account_id()
 
     @property
     def overdraft_limit(self) -> Decimal:
@@ -34,7 +36,7 @@ class PremiumAccount(BankAccount):
         return self._fixed_fee
 
     def withdraw(self, amount):
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
 
         if amount > self._withdrawal_limit:

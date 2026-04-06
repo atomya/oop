@@ -4,6 +4,7 @@ from accounts.base.bank_account import BankAccount
 from accounts.types.investment.portfolio import Portfolio
 from shared.enums import AccountStatus, Currency
 from shared.exceptions import InsufficientFundsError
+from utils.validation import require_positive_decimal
 
 
 class InvestmentAccount(BankAccount):
@@ -16,13 +17,14 @@ class InvestmentAccount(BankAccount):
     ):
         super().__init__(owner, currency, account_id=account_id, status=status)
         self._portfolio = Portfolio()
+        self._reserve_account_id()
 
     @property
     def portfolio(self) -> dict[str, Decimal]:
         return self._portfolio.as_dict()
 
     def withdraw(self, amount):
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
 
         if amount > self._balance:
@@ -31,7 +33,7 @@ class InvestmentAccount(BankAccount):
         self._balance -= amount
 
     def invest_in_asset(self, asset_type: str, amount) -> None:
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
 
         if amount > self._balance:
@@ -42,7 +44,7 @@ class InvestmentAccount(BankAccount):
         self._portfolio.invest(normalized_asset_type, amount)
 
     def sell_asset(self, asset_type: str, amount) -> None:
-        amount = self._validate_amount(amount)
+        amount = require_positive_decimal(amount, "Amount")
         self._check_status()
 
         self._portfolio.sell(asset_type, amount)

@@ -1,5 +1,5 @@
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from accounts import (
     BankAccount,
@@ -7,18 +7,22 @@ from accounts import (
     PremiumAccount,
     SavingsAccount,
 )
+from audit.account_audit_logger import AccountAuditLogger
+from audit.transaction_audit_logger import TransactionAuditLogger
 from domain.bank import Bank
 from domain.client import Client
-from shared.enums import Currency, AccountStatus
+from services.transaction_processor import TransactionProcessor
+from shared.enums import Currency, AccountStatus, TransactionType
 from shared.exceptions import AccountFrozenError, InsufficientFundsError, InvalidOperationError
-from services.account_audit_logger import AccountAuditLogger
 from services.account_service import AccountService
+from transactions.transaction import Transaction
+from transactions.transaction_queue import TransactionQueue
 
 
 def configure_logging():
     logging.basicConfig(
         level=logging.INFO,
-        format="%(levelname)s %(name)s %(message)s | %(id)s %(owner)s %(currency)s %(balance)s",
+        format="%(levelname)s %(name)s %(message)s",
     )
 
 
@@ -103,6 +107,111 @@ def run_bank_demo():
     }
 
 
+def run_transaction_demo():
+    current_time = {"value": datetime(2026, 4, 3, 14, 0)}
+    bank = Bank("Day 4 Demo Bank", now_provider=lambda: current_time["value"])
+    account_service = AccountService(AccountAuditLogger("demo.accounts"))
+
+    clients = [
+        Client(
+            full_name="Alice River",
+            birth_date=date(1990, 1, 10),
+            contacts={"phone": "+10000000001", "email": "alice@example.com"},
+            pin_code="1111",
+        ),
+        Client(
+            full_name="Bob Stone",
+            birth_date=date(1991, 2, 11),
+            contacts={"phone": "+10000000002", "email": "bob@example.com"},
+            pin_code="2222",
+        ),
+        Client(
+            full_name="Carol Frost",
+            birth_date=date(1989, 3, 12),
+            contacts={"phone": "+10000000003", "email": "carol@example.com"},
+            pin_code="3333",
+        ),
+        Client(
+            full_name="Dave Snow",
+            birth_date=date(1988, 4, 13),
+            contacts={"phone": "+10000000004", "email": "dave@example.com"},
+            pin_code="4444",
+        ),
+        Client(
+            full_name="Emma Lake",
+            birth_date=date(1992, 5, 14),
+            contacts={"phone": "+10000000005", "email": "emma@example.com"},
+            pin_code="5555",
+        ),
+    ]
+
+    for client in clients:
+        bank.add_client(client)
+
+    alice_account = bank.open_account(clients[0].client_id, BankAccount, currency=Currency.USD)
+    bob_account = bank.open_account(
+        clients[1].client_id,
+        SavingsAccount,
+        currency=Currency.EUR,
+        min_balance=0,
+        monthly_interest_rate=0.01,
+    )
+    carol_account = bank.open_account(
+        clients[2].client_id,
+        PremiumAccount,
+        currency=Currency.USD,
+        overdraft_limit=500,
+        withdrawal_limit=1000,
+        fixed_fee=10,
+    )
+    dave_account = bank.open_account(clients[3].client_id, BankAccount, currency=Currency.USD)
+    emma_account = bank.open_account(clients[4].client_id, BankAccount, currency=Currency.KZT)
+
+    account_service.deposit(alice_account, 2000)
+    account_service.deposit(carol_account, 50)
+    bank.freeze_account(dave_account.account_id)
+
+    queue = TransactionQueue(now_provider=lambda: current_time["value"])
+    processor = TransactionProcessor(
+        bank,
+        TransactionAuditLogger("demo.transactions"),
+        now_provider=lambda: current_time["value"],
+    )
+
+    transactions = [
+        Transaction(TransactionType.INTERNAL_TRANSFER, 100, Currency.USD, alice_account.account_id, bob_account.account_id, transaction_id="demo-tx-001", created_at=current_time["value"]),
+        Transaction(TransactionType.EXTERNAL_TRANSFER, 100, Currency.USD, alice_account.account_id, "external-demo-001", transaction_id="demo-tx-002", created_at=current_time["value"]),
+        Transaction(TransactionType.INTERNAL_TRANSFER, 10, Currency.USD, alice_account.account_id, emma_account.account_id, transaction_id="demo-tx-003", created_at=current_time["value"]),
+        Transaction(TransactionType.INTERNAL_TRANSFER, 20, Currency.USD, alice_account.account_id, dave_account.account_id, transaction_id="demo-tx-004", created_at=current_time["value"]),
+        Transaction(TransactionType.EXTERNAL_TRANSFER, 5000, Currency.USD, alice_account.account_id, "external-demo-002", transaction_id="demo-tx-005", created_at=current_time["value"]),
+        Transaction(TransactionType.EXTERNAL_TRANSFER, 200, Currency.USD, carol_account.account_id, "external-demo-003", transaction_id="demo-tx-006", created_at=current_time["value"]),
+        Transaction(TransactionType.INTERNAL_TRANSFER, 50, Currency.USD, alice_account.account_id, bob_account.account_id, scheduled_for=current_time["value"] + timedelta(hours=1), transaction_id="demo-tx-007", created_at=current_time["value"]),
+        Transaction(TransactionType.EXTERNAL_TRANSFER, 25, Currency.USD, alice_account.account_id, "external-demo-004", transaction_id="demo-tx-008", created_at=current_time["value"]),
+        Transaction(TransactionType.EXTERNAL_TRANSFER, 30, Currency.USD, alice_account.account_id, "external-demo-005", transaction_id="demo-tx-009", created_at=current_time["value"]),
+        Transaction(TransactionType.INTERNAL_TRANSFER, 15, Currency.USD, alice_account.account_id, "missing-demo-account", transaction_id="demo-tx-010", created_at=current_time["value"]),
+    ]
+
+    for transaction in transactions:
+        queue.add(transaction)
+
+    queue.cancel("demo-tx-008")
+    first_pass = processor.process_all(queue)
+    current_time["value"] = current_time["value"] + timedelta(hours=1, minutes=10)
+    second_pass = processor.process_all(queue)
+
+    return {
+        "transactions": transactions,
+        "processed_count": len(first_pass) + len(second_pass),
+        "remaining_in_queue": len(queue),
+        "balances": {
+            "alice": alice_account.balance,
+            "bob": bob_account.balance,
+            "carol": carol_account.balance,
+            "emma": emma_account.balance,
+        },
+    }
+
+
 def render_demo_output(demo_result):
     for message in demo_result["messages"]:
         print(message)
@@ -124,13 +233,28 @@ def render_bank_demo_output(bank_demo_result):
     print("Bank ranking:", bank_demo_result["ranking"])
 
 
+def render_transaction_demo_output(transaction_demo_result):
+    print("Processed transactions:", transaction_demo_result["processed_count"])
+    print("Remaining in queue:", transaction_demo_result["remaining_in_queue"])
+    print("Final balances:", transaction_demo_result["balances"])
+    for transaction in transaction_demo_result["transactions"]:
+        print(
+            transaction.transaction_id,
+            transaction.status.value,
+            transaction.fee,
+            transaction.failure_reason,
+        )
+
+
 def main():
     configure_logging()
     account_service = AccountService(AccountAuditLogger())
     demo_result = run_demo(account_service)
     bank_demo_result = run_bank_demo()
+    transaction_demo_result = run_transaction_demo()
     render_demo_output(demo_result)
     render_bank_demo_output(bank_demo_result)
+    render_transaction_demo_output(transaction_demo_result)
 
 
 if __name__ == "__main__":

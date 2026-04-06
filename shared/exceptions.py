@@ -16,3 +16,8 @@ class InvalidOperationError(Exception):
 class InsufficientFundsError(Exception):
     def __init__(self):
         super().__init__("Insufficient funds")
+
+
+class TemporaryProcessingError(Exception):
+    def __init__(self, message="Temporary processing error"):
+        super().__init__(message)
