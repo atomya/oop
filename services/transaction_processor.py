@@ -1,10 +1,11 @@
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal
 
 from accounts import PremiumAccount
-from audit.base_audit_logger import BaseAuditLogger
+from audit.loggers.base_audit_logger import BaseAuditLogger
 from domain.bank import Bank
-from shared.enums import AccountStatus, Currency, TransactionType
+from risk.risk_analyzer import RiskAnalyzer
+from shared.enums import AccountStatus, AuditLevel, Currency, RiskLevel, TransactionStatus, TransactionType
 from shared.exceptions import (
     AccountClosedError,
     AccountFrozenError,
@@ -15,6 +16,12 @@ from shared.exceptions import (
 from transactions.rules import TransactionRules
 from transactions.transaction import Transaction
 from transactions.transaction_queue import TransactionQueue
+from utils.currency import (
+    BASE_EXCHANGE_RATES,
+    convert_currency_amount,
+    quantize_money,
+    validate_exchange_rates,
+)
 from utils.validation import (
     require_non_negative_decimal,
     require_non_negative_int,
@@ -32,6 +39,7 @@ class TransactionProcessor:
         external_transfer_fee_rate=TransactionRules.DEFAULT_EXTERNAL_TRANSFER_FEE_RATE,
         max_retries: int = TransactionRules.DEFAULT_MAX_RETRIES,
         retry_delay_minutes: int = TransactionRules.DEFAULT_RETRY_DELAY_MINUTES,
+        risk_analyzer: RiskAnalyzer | None = None,
     ):
         if not isinstance(bank, Bank):
             raise InvalidOperationError("TransactionProcessor requires a Bank instance")
@@ -39,9 +47,8 @@ class TransactionProcessor:
         self._bank = bank
         self._audit_logger = audit_logger
         self._now_provider = now_provider or datetime.now
-        self._exchange_rates = self._validate_exchange_rates(
-            exchange_rates or TransactionRules.BASE_EXCHANGE_RATES
-        )
+        self._risk_analyzer = risk_analyzer
+        self._exchange_rates = validate_exchange_rates(exchange_rates or BASE_EXCHANGE_RATES)
         self._external_transfer_fee_rate = require_non_negative_decimal(
             external_transfer_fee_rate,
             "External transfer fee rate",
@@ -52,44 +59,12 @@ class TransactionProcessor:
             "Retry delay minutes",
         )
 
-    @staticmethod
-    def _validate_exchange_rates(exchange_rates: dict[Currency, Decimal]) -> dict[Currency, Decimal]:
-        if not isinstance(exchange_rates, dict) or not exchange_rates:
-            raise InvalidOperationError("Exchange rates must be a non-empty dictionary")
-
-        normalized_rates = {}
-        for currency, rate in exchange_rates.items():
-            if not isinstance(currency, Currency):
-                raise InvalidOperationError("Exchange rate keys must be Currency enums")
-            if isinstance(rate, bool) or not isinstance(rate, (int, float, Decimal)):
-                raise InvalidOperationError("Exchange rate values must be numeric")
-
-            decimal_rate = Decimal(str(rate))
-            if decimal_rate <= 0:
-                raise InvalidOperationError("Exchange rates must be positive")
-            normalized_rates[currency] = decimal_rate
-
-        return normalized_rates
-
-    @staticmethod
-    def _quantize_money(amount: Decimal) -> Decimal:
-        return amount.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
     def _now(self) -> datetime:
         return self._now_provider()
 
-    def _convert_amount(self, amount: Decimal, from_currency: Currency, to_currency: Currency) -> Decimal:
-        if from_currency == to_currency:
-            return self._quantize_money(amount)
-
-        from_rate = self._exchange_rates[from_currency]
-        to_rate = self._exchange_rates[to_currency]
-        converted_amount = (amount / from_rate) * to_rate
-        return self._quantize_money(converted_amount)
-
     def _calculate_fee(self, transaction: Transaction, sender_amount: Decimal) -> Decimal:
         if transaction.transaction_type == TransactionType.EXTERNAL_TRANSFER:
-            return self._quantize_money(sender_amount * self._external_transfer_fee_rate)
+            return quantize_money(sender_amount * self._external_transfer_fee_rate)
         return Decimal("0.00")
 
     @staticmethod
@@ -118,22 +93,24 @@ class TransactionProcessor:
                 raise InvalidOperationError("Recipient account not found")
             recipient = self._bank.get_account(transaction.recipient)
             self._validate_account_for_transfer(recipient, "Recipient")
-            recipient_credit_amount = self._convert_amount(
+            recipient_credit_amount = convert_currency_amount(
                 transaction.amount,
                 transaction.currency,
                 recipient.currency,
+                self._exchange_rates,
             )
         else:
             recipient = None
-            recipient_credit_amount = self._quantize_money(transaction.amount)
+            recipient_credit_amount = quantize_money(transaction.amount)
 
-        sender_debit_amount = self._convert_amount(
+        sender_debit_amount = convert_currency_amount(
             transaction.amount,
             transaction.currency,
             sender.currency,
+            self._exchange_rates,
         )
         fee_amount = self._calculate_fee(transaction, sender_debit_amount)
-        total_debit = self._quantize_money(sender_debit_amount + fee_amount)
+        total_debit = quantize_money(sender_debit_amount + fee_amount)
 
         return {
             "sender": sender,
@@ -179,17 +156,65 @@ class TransactionProcessor:
             self._audit_logger.log(
                 "transaction_retry_scheduled",
                 transaction,
+                level=AuditLevel.WARNING,
+                message="Temporary processing error, retry scheduled",
                 error=str(error),
                 next_retry_at=next_attempt_at.isoformat(timespec="seconds"),
             )
             return
 
         transaction.mark_failed(str(error), self._now())
+        queue.remove(transaction.transaction_id)
         self._audit_logger.log(
             "transaction_failed",
             transaction,
+            level=AuditLevel.ERROR,
+            message="Transaction failed after retry attempts were exhausted",
             error=str(error),
         )
+
+    def _assess_risk(self, queue: TransactionQueue, transaction: Transaction):
+        if self._risk_analyzer is None:
+            return None, None
+
+        sender_owner = self._bank.get_account_owner(transaction.sender)
+        assessment = self._risk_analyzer.assess_transaction(
+            transaction,
+            client_id=sender_owner.client_id,
+            current_time=self._now(),
+        )
+        blocked = assessment.level == RiskLevel.HIGH
+        self._risk_analyzer.record_assessment(
+            sender_owner.client_id,
+            transaction,
+            assessment,
+            blocked=blocked,
+            succeeded=False,
+            timestamp=self._now(),
+        )
+
+        if assessment.suspicious:
+            event = "transaction_blocked_high_risk" if blocked else "transaction_risk_detected"
+            level = AuditLevel.ERROR if blocked else AuditLevel.WARNING
+            message = "High risk transaction blocked" if blocked else "Suspicious transaction detected"
+            self._audit_logger.log(
+                event,
+                transaction,
+                level=level,
+                message=message,
+                suspicious=True,
+                risk_level=assessment.level,
+                client_id=sender_owner.client_id,
+                risk_score=assessment.score,
+                risk_reasons=list(assessment.reasons),
+            )
+
+        if blocked:
+            transaction.mark_failed("High risk operation blocked", self._now())
+            queue.remove(transaction.transaction_id)
+            return sender_owner.client_id, assessment
+
+        return sender_owner.client_id, assessment
 
     def process_next(self, queue: TransactionQueue) -> Transaction | None:
         if not isinstance(queue, TransactionQueue):
@@ -200,14 +225,38 @@ class TransactionProcessor:
             return None
 
         try:
+            sender_client_id, assessment = self._assess_risk(queue, transaction)
+        except InvalidOperationError as error:
+            transaction.mark_failed(str(error), self._now())
+            queue.remove(transaction.transaction_id)
+            self._audit_logger.log(
+                "transaction_failed",
+                transaction,
+                level=AuditLevel.ERROR,
+                message="Transaction failed during risk evaluation",
+                error=str(error),
+            )
+            return transaction
+
+        if transaction.status == TransactionStatus.FAILED:
+            return transaction
+
+        try:
             plan = self._prepare_execution_plan(transaction)
             transaction.mark_processing(self._now())
             self._execute_plan(transaction, plan)
             transaction.mark_completed(self._now(), fee=plan["fee_amount"])
             queue.remove(transaction.transaction_id)
+            if self._risk_analyzer is not None and sender_client_id is not None:
+                self._risk_analyzer.mark_successful_transaction(sender_client_id, transaction)
             self._audit_logger.log(
                 "transaction_completed",
                 transaction,
+                level=AuditLevel.INFO,
+                message="Transaction completed successfully",
+                suspicious=bool(assessment and assessment.suspicious),
+                risk_level=assessment.level if assessment is not None else None,
+                client_id=sender_client_id,
                 fee=plan["fee_amount"],
                 sender_debit_amount=plan["sender_debit_amount"],
                 recipient_credit_amount=plan["recipient_credit_amount"],
@@ -220,6 +269,11 @@ class TransactionProcessor:
             self._audit_logger.log(
                 "transaction_failed",
                 transaction,
+                level=AuditLevel.ERROR,
+                message="Transaction failed due to business rule or account state",
+                suspicious=bool(assessment and assessment.suspicious),
+                risk_level=assessment.level if assessment is not None else None,
+                client_id=sender_client_id,
                 error=str(error),
             )
         except Exception as error:
@@ -228,6 +282,11 @@ class TransactionProcessor:
             self._audit_logger.log(
                 "transaction_failed",
                 transaction,
+                level=AuditLevel.CRITICAL,
+                message="Transaction failed due to unexpected processing error",
+                suspicious=bool(assessment and assessment.suspicious),
+                risk_level=assessment.level if assessment is not None else None,
+                client_id=sender_client_id,
                 error=str(error),
             )
 

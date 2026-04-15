@@ -1,11 +1,12 @@
 # Banking OOP Project
 
 Учебный проект по ООП на Python.  
-Сейчас в проекте реализованы Day 1, Day 2, Day 3 и Day 4:
+Сейчас в проекте реализованы Day 1, Day 2, Day 3, Day 4 и Day 5:
 - базовые банковские счета и статусы;
 - `SavingsAccount`, `PremiumAccount`, `InvestmentAccount`;
 - система `Client` и управляющий класс `Bank`;
-- транзакции, очередь и процессинг переводов.
+- транзакции, очередь и процессинг переводов;
+- аудит и rule-based риск-анализ операций.
 
 ## Что реализовано
 
@@ -65,6 +66,21 @@
 - `canceled_at`
 - `retry_count`
 
+### Audit и Risk
+- `AuditJournal`
+  - уровни важности `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+  - хранение записей в памяти
+  - сохранение в файл `jsonl`
+  - фильтрация
+  - отчёты по suspicious operations, клиентскому риску и статистике ошибок
+- `RiskAnalyzer`
+  - крупная сумма
+  - частые операции
+  - новый получатель
+  - ночная операция
+  - уровни риска `LOW`, `MEDIUM`, `HIGH`
+  - блокировка `HIGH` риска до исполнения транзакции
+
 ## Очередь и процессинг
 
 ### TransactionQueue
@@ -92,6 +108,8 @@ HIGH -> NORMAL -> HIGH -> NORMAL -> LOW
 
 ### TransactionProcessor
 - берёт ready-транзакции из очереди;
+- делает risk assessment до исполнения;
+- блокирует опасные операции уровня `HIGH`;
 - проверяет счета и банковые ограничения;
 - считает комиссию;
 - делает конвертацию валют;
@@ -112,6 +130,7 @@ HIGH -> NORMAL -> HIGH -> NORMAL -> LOW
 - запрещены переводы с отрицательного баланса, кроме `PremiumAccount`;
 - запрещены переводы по замороженным и закрытым счетам;
 - комиссия применяется к внешним переводам;
+- опасные операции уровня `HIGH` блокируются до исполнения;
 - валидация входных данных выполняется до изменения состояния объектов;
 - для счетов, клиентов и транзакций используются короткие уникальные ID;
 - в `__str__()` у счетов показываются последние 4 цифры номера.
@@ -121,8 +140,9 @@ HIGH -> NORMAL -> HIGH -> NORMAL -> LOW
 - `accounts/` — иерархия счетов
 - `domain/` — доменные сущности `Bank` и `Client`
 - `transactions/` — транзакции и очередь
+- `risk/` — rule-based анализ риска
 - `services/` — application layer и процессоры
-- `audit/` — аудит-логгеры
+- `audit/` — журнал аудита, записи аудита и аудит-логгеры
 - `shared/` — общие `enums` и `exceptions`
 - `utils/` — общие утилиты валидации и ID
 - `tests/` — unit-тесты
@@ -132,12 +152,18 @@ accounts/
   base/
   types/
 audit/
-  base_audit_logger.py
-  account_audit_logger.py
-  transaction_audit_logger.py
+  audit_record.py
+  audit_journal.py
+  loggers/
+    base_audit_logger.py
+    account_audit_logger.py
+    transaction_audit_logger.py
 domain/
   bank.py
   client.py
+risk/
+  risk_analyzer.py
+  risk_assessment.py
 services/
   account_service.py
   transaction_processor.py
@@ -181,4 +207,7 @@ python3 -m unittest discover -s tests -p 'test_*.py'
 - заморозку и разморозку счета;
 - обработку транзакций;
 - delayed, cancel, fail и retry-сценарии;
+- suspicious operations report;
+- client risk profile;
+- error statistics по аудиту;
 - обработку доменных ошибок.

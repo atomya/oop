@@ -38,3 +38,16 @@ class TransactionPriority(Enum):
     LOW = 1
     NORMAL = 2
     HIGH = 3
+
+
+class AuditLevel(Enum):
+    INFO = "info"
+    WARNING = "warning"
+    ERROR = "error"
+    CRITICAL = "critical"
+
+
+class RiskLevel(Enum):
+    LOW = "low"
+    MEDIUM = "medium"
+    HIGH = "high"

@@ -9,9 +9,9 @@ from accounts import (
     PremiumAccount,
     SavingsAccount,
 )
-from audit.account_audit_logger import AccountAuditLogger
-from audit.base_audit_logger import BaseAuditLogger
-from audit.transaction_audit_logger import TransactionAuditLogger
+from audit.loggers.account_audit_logger import AccountAuditLogger
+from audit.loggers.base_audit_logger import BaseAuditLogger
+from audit.loggers.transaction_audit_logger import TransactionAuditLogger
 from accounts.types.investment.portfolio_position import PortfolioPosition
 from domain.bank import Bank
 from domain.client import Client
@@ -36,6 +36,12 @@ class FakeAuditLogger(BaseAuditLogger):
 
     def _build_payload(self, entity) -> dict:
         return {}
+
+    def _build_identifiers(self, payload: dict, extra: dict) -> dict:
+        return {}
+
+    def _entity_type(self) -> str:
+        return "test"
 
     def log(self, event: str, entity, **extra) -> None:
         self.entries.append((event, entity, extra))
@@ -543,7 +549,7 @@ class BankTestCase(unittest.TestCase):
         self.assertEqual(ranking[0]["total_balance"], Decimal("1500.00"))
         self.assertEqual(len(ranking), 2)
         self.assertEqual(len(full_ranking), 3)
-        self.assertEqual(bank.get_total_balance(), Decimal("2000.00"))
+        self.assertEqual(bank.get_total_balance(), Decimal("2043.48"))
 
     def test_bank_rejects_invalid_arguments_before_late_failures(self):
         bank = Bank("Validation Bank", now_provider=lambda: datetime(2026, 4, 3, 12, 0))
@@ -630,7 +636,7 @@ class PortfolioPositionTestCase(unittest.TestCase):
 
 class AccountAuditLoggerTestCase(unittest.TestCase):
     def test_account_audit_logger_writes_structured_log(self):
-        with patch("audit.base_audit_logger.logging.getLogger") as mock_get_logger:
+        with patch("audit.loggers.base_audit_logger.logging.getLogger") as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
 
@@ -640,7 +646,7 @@ class AccountAuditLoggerTestCase(unittest.TestCase):
             audit_logger.log("deposit", account, amount=500)
 
             mock_get_logger.assert_called_once_with("audit")
-            mock_logger.info.assert_called_once()
+            mock_logger.log.assert_called_once()
 
 
 class TransactionQueueTestCase(unittest.TestCase):
@@ -1093,7 +1099,7 @@ class TransactionProcessorTestCase(unittest.TestCase):
 
 class TransactionAuditLoggerTestCase(unittest.TestCase):
     def test_transaction_audit_logger_writes_structured_log(self):
-        with patch("audit.base_audit_logger.logging.getLogger") as mock_get_logger:
+        with patch("audit.loggers.base_audit_logger.logging.getLogger") as mock_get_logger:
             mock_logger = Mock()
             mock_get_logger.return_value = mock_logger
 
@@ -1110,7 +1116,7 @@ class TransactionAuditLoggerTestCase(unittest.TestCase):
             audit_logger.log("transaction_created", transaction, note="demo")
 
             mock_get_logger.assert_called_once_with("transaction_audit")
-            mock_logger.info.assert_called_once()
+            mock_logger.log.assert_called_once()
 
 
 if __name__ == "__main__":

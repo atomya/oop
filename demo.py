@@ -7,10 +7,12 @@ from accounts import (
     PremiumAccount,
     SavingsAccount,
 )
-from audit.account_audit_logger import AccountAuditLogger
-from audit.transaction_audit_logger import TransactionAuditLogger
+from audit.audit_journal import AuditJournal
+from audit.loggers.account_audit_logger import AccountAuditLogger
+from audit.loggers.transaction_audit_logger import TransactionAuditLogger
 from domain.bank import Bank
 from domain.client import Client
+from risk.risk_analyzer import RiskAnalyzer
 from services.transaction_processor import TransactionProcessor
 from shared.enums import Currency, AccountStatus, TransactionType
 from shared.exceptions import AccountFrozenError, InsufficientFundsError, InvalidOperationError
@@ -111,6 +113,7 @@ def run_transaction_demo():
     current_time = {"value": datetime(2026, 4, 3, 14, 0)}
     bank = Bank("Day 4 Demo Bank", now_provider=lambda: current_time["value"])
     account_service = AccountService(AccountAuditLogger("demo.accounts"))
+    audit_journal = AuditJournal()
 
     clients = [
         Client(
@@ -172,10 +175,12 @@ def run_transaction_demo():
     bank.freeze_account(dave_account.account_id)
 
     queue = TransactionQueue(now_provider=lambda: current_time["value"])
+    risk_analyzer = RiskAnalyzer(now_provider=lambda: current_time["value"])
     processor = TransactionProcessor(
         bank,
-        TransactionAuditLogger("demo.transactions"),
+        TransactionAuditLogger("demo.transactions", audit_journal=audit_journal),
         now_provider=lambda: current_time["value"],
+        risk_analyzer=risk_analyzer,
     )
 
     transactions = [
@@ -203,6 +208,9 @@ def run_transaction_demo():
         "transactions": transactions,
         "processed_count": len(first_pass) + len(second_pass),
         "remaining_in_queue": len(queue),
+        "suspicious_operations": audit_journal.suspicious_operations_report(),
+        "error_statistics": audit_journal.error_statistics(),
+        "alice_risk_profile": risk_analyzer.get_client_risk_profile(clients[0].client_id),
         "balances": {
             "alice": alice_account.balance,
             "bob": bob_account.balance,
@@ -237,6 +245,9 @@ def render_transaction_demo_output(transaction_demo_result):
     print("Processed transactions:", transaction_demo_result["processed_count"])
     print("Remaining in queue:", transaction_demo_result["remaining_in_queue"])
     print("Final balances:", transaction_demo_result["balances"])
+    print("Suspicious operations:", transaction_demo_result["suspicious_operations"])
+    print("Error statistics:", transaction_demo_result["error_statistics"])
+    print("Alice risk profile:", transaction_demo_result["alice_risk_profile"])
     for transaction in transaction_demo_result["transactions"]:
         print(
             transaction.transaction_id,

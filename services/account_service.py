@@ -1,5 +1,5 @@
 from accounts import InvestmentAccount, SavingsAccount
-from audit.base_audit_logger import BaseAuditLogger
+from audit.loggers.base_audit_logger import BaseAuditLogger
 
 
 class AccountService:

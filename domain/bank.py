@@ -6,17 +6,26 @@ from accounts import BankAccount
 from domain.client import Client
 from shared.enums import AccountStatus, ClientStatus, Currency
 from shared.exceptions import InvalidOperationError
+from utils.currency import BASE_EXCHANGE_RATES, convert_currency_amount, validate_exchange_rates
 from utils.validation import require_enum, require_non_empty_string
 
 
 class Bank:
-    def __init__(self, name: str, now_provider: Callable[[], datetime] | None = None):
+    def __init__(
+        self,
+        name: str,
+        now_provider: Callable[[], datetime] | None = None,
+        base_currency: Currency = Currency.USD,
+        exchange_rates: dict[Currency, Decimal] | None = None,
+    ):
         self._name = require_non_empty_string(name, "Bank name")
         self._clients: dict[str, Client] = {}
         self._accounts: dict[str, BankAccount] = {}
         self._account_owners: dict[str, str] = {}
         self._suspicious_actions: list[dict] = []
         self._now_provider = now_provider or datetime.now
+        self._base_currency = require_enum(base_currency, Currency, "Base currency")
+        self._exchange_rates = validate_exchange_rates(exchange_rates or BASE_EXCHANGE_RATES)
 
     @staticmethod
     def _validate_account_type(account_type, *, allow_none: bool = False):
@@ -46,6 +55,10 @@ class Bank:
     @property
     def suspicious_actions(self) -> list[dict]:
         return list(self._suspicious_actions)
+
+    @property
+    def base_currency(self) -> Currency:
+        return self._base_currency
 
     def _now(self) -> datetime:
         return self._now_provider()
@@ -106,6 +119,9 @@ class Bank:
     def ensure_operation_allowed(self, action: str, client_id: str | None = None, **details) -> None:
         client = self._get_client(client_id) if client_id is not None else None
         self._ensure_operation_allowed(action, client=client, **details)
+
+    def _convert_to_base_currency(self, amount: Decimal, currency: Currency) -> Decimal:
+        return convert_currency_amount(amount, currency, self._base_currency, self._exchange_rates)
 
     def add_client(self, client: Client) -> None:
         if not isinstance(client, Client):
@@ -225,7 +241,7 @@ class Bank:
         total = Decimal("0.00")
         for account in self._accounts.values():
             if account.status != AccountStatus.CLOSED:
-                total += account.balance
+                total += self._convert_to_base_currency(account.balance, account.currency)
         return total
 
     def get_clients_ranking(self, only_active: bool = True) -> list[dict]:
@@ -238,13 +254,15 @@ class Bank:
 
             total_balance = Decimal("0.00")
             for account_id in client.account_ids:
-                total_balance += self._accounts[account_id].balance
+                account = self._accounts[account_id]
+                total_balance += self._convert_to_base_currency(account.balance, account.currency)
 
             ranking.append(
                 {
                     "client_id": client.client_id,
                     "full_name": client.full_name,
                     "total_balance": total_balance,
+                    "base_currency": self._base_currency.value,
                     "accounts_count": len(client.account_ids),
                     "status": client.status.value,
                 }
