@@ -14,6 +14,7 @@ from audit.loggers.account_audit_logger import AccountAuditLogger
 from audit.loggers.base_audit_logger import BaseAuditLogger
 from audit.loggers.transaction_audit_logger import TransactionAuditLogger
 from accounts.types.investment.portfolio_position import PortfolioPosition
+from demo_support.validation import validate_account_preparation_steps, validate_transaction_group_definitions
 from domain.bank import Bank
 from domain.client import Client
 from shared.enums import AccountStatus, ClientStatus, Currency
@@ -1152,6 +1153,38 @@ class TransactionAuditLoggerTestCase(unittest.TestCase):
 
             mock_get_logger.assert_called_once_with("transaction_audit")
             mock_logger.log.assert_called_once()
+
+
+class DemoValidationTestCase(unittest.TestCase):
+    def test_account_preparation_steps_fail_on_unknown_action(self):
+        with self.assertRaisesRegex(ValueError, "unknown action"):
+            validate_account_preparation_steps(
+                (
+                    {"action": "deposit", "account": "alice_main", "amount": 100},
+                    {"action": "explode", "account": "alice_main"},
+                ),
+                {"alice_main"},
+            )
+
+    def test_transaction_group_definitions_fail_on_unknown_sender(self):
+        with self.assertRaisesRegex(ValueError, "unknown sender"):
+            validate_transaction_group_definitions(
+                (
+                    {
+                        "schedule": None,
+                        "cases": (
+                            {
+                                "transaction_type": TransactionType.EXTERNAL_TRANSFER,
+                                "amount": 100,
+                                "currency": Currency.USD,
+                                "sender": "missing_account",
+                                "recipient_external": ("risk", 1),
+                            },
+                        ),
+                    },
+                ),
+                {"alice_main"},
+            )
 
 
 if __name__ == "__main__":

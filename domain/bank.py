@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Callable
+from typing import Callable, TypeVar, overload
 
 from accounts import BankAccount
 from domain.client import Client
@@ -8,6 +8,8 @@ from shared.enums import AccountStatus, ClientStatus, Currency
 from shared.exceptions import InvalidOperationError
 from utils.currency import BASE_EXCHANGE_RATES, convert_currency_amount, validate_exchange_rates
 from utils.validation import require_enum, require_non_empty_string
+
+AccountType = TypeVar("AccountType", bound=BankAccount)
 
 
 class Bank:
@@ -28,7 +30,11 @@ class Bank:
         self._exchange_rates = validate_exchange_rates(exchange_rates or BASE_EXCHANGE_RATES)
 
     @staticmethod
-    def _validate_account_type(account_type, *, allow_none: bool = False):
+    def _validate_account_type(
+        account_type: type[AccountType] | None,
+        *,
+        allow_none: bool = False,
+    ) -> type[AccountType] | None:
         if account_type is None and allow_none:
             return None
 
@@ -130,6 +136,12 @@ class Bank:
         if client.client_id in self._clients:
             raise InvalidOperationError("Client ID must be unique")
         self._clients[client.client_id] = client
+
+    @overload
+    def open_account(self, client_id: str, account_type: type[AccountType], **account_data) -> AccountType: ...
+
+    @overload
+    def open_account(self, client_id: str, account_type: type[BankAccount] = BankAccount, **account_data) -> BankAccount: ...
 
     def open_account(self, client_id: str, account_type: type[BankAccount] = BankAccount, **account_data) -> BankAccount:
         account_type = self._validate_account_type(account_type)
