@@ -178,7 +178,11 @@ def run_transaction_demo():
     risk_analyzer = RiskAnalyzer(now_provider=lambda: current_time["value"])
     processor = TransactionProcessor(
         bank,
-        TransactionAuditLogger("demo.transactions", audit_journal=audit_journal),
+        TransactionAuditLogger(
+            "demo.transactions",
+            audit_journal=audit_journal,
+            now_provider=lambda: current_time["value"],
+        ),
         now_provider=lambda: current_time["value"],
         risk_analyzer=risk_analyzer,
     )

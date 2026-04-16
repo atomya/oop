@@ -3,6 +3,7 @@ from decimal import Decimal
 from accounts.base.bank_account import BankAccount
 from shared.enums import AccountStatus, Currency
 from shared.exceptions import InsufficientFundsError
+from utils.currency import quantize_money
 from utils.validation import require_non_negative_decimal, require_positive_decimal
 
 
@@ -44,8 +45,8 @@ class SavingsAccount(BankAccount):
 
     def apply_monthly_interest(self) -> Decimal:
         self._check_status()
-        interest = self._balance * self._monthly_interest_rate
-        self._balance += interest
+        interest = quantize_money(self._balance * self._monthly_interest_rate)
+        self._balance = quantize_money(self._balance + interest)
         return interest
 
     def get_account_info(self):

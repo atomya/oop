@@ -8,9 +8,18 @@ from shared.enums import AuditLevel, RiskLevel
 
 
 class BaseAuditLogger(ABC):
-    def __init__(self, logger_name: str = __name__, audit_journal: AuditJournal | None = None):
+    def __init__(
+        self,
+        logger_name: str = __name__,
+        audit_journal: AuditJournal | None = None,
+        now_provider=None,
+    ):
         self._logger = logging.getLogger(logger_name)
         self._audit_journal = audit_journal
+        self._now_provider = now_provider or datetime.now
+
+    def _now(self) -> datetime:
+        return self._now_provider()
 
     def log(
         self,
@@ -30,7 +39,7 @@ class BaseAuditLogger(ABC):
             identifiers = self._build_identifiers(payload, extra)
             self._audit_journal.record(
                 AuditRecord(
-                    timestamp=datetime.now(),
+                    timestamp=self._now(),
                     level=level,
                     event=event,
                     entity_type=self._entity_type(),

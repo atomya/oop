@@ -3,6 +3,7 @@ from decimal import Decimal
 from accounts.types.investment.portfolio_position import PortfolioPosition
 from accounts.types.investment.rules import InvestmentRules
 from shared.exceptions import InvalidOperationError
+from utils.currency import quantize_money
 
 
 class Portfolio:
@@ -37,7 +38,7 @@ class Portfolio:
 
         for asset_type, amount in self.as_dict().items():
             rate = Decimal(str(rates.get(asset_type, Decimal("0.00"))))
-            projection[asset_type] = amount * (Decimal("1.00") + rate)
+            projection[asset_type] = quantize_money(amount * (Decimal("1.00") + rate))
 
         return projection
 

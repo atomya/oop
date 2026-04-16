@@ -9,6 +9,7 @@ from accounts import (
     PremiumAccount,
     SavingsAccount,
 )
+from audit.audit_journal import AuditJournal
 from audit.loggers.account_audit_logger import AccountAuditLogger
 from audit.loggers.base_audit_logger import BaseAuditLogger
 from audit.loggers.transaction_audit_logger import TransactionAuditLogger
@@ -243,6 +244,15 @@ class SavingsAccountTestCase(unittest.TestCase):
         self.assertEqual(account.min_balance, Decimal("0"))
         self.assertEqual(account.monthly_interest_rate, Decimal("0.05"))
 
+    def test_savings_account_rounds_interest_to_bank_precision(self):
+        account = SavingsAccount("Bob", Currency.EUR, min_balance=0, monthly_interest_rate=0.015)
+        account.deposit(100)
+
+        interest = account.apply_monthly_interest()
+
+        self.assertEqual(interest, Decimal("1.50"))
+        self.assertEqual(account.balance, Decimal("101.50"))
+
 
 class PremiumAccountTestCase(unittest.TestCase):
     def test_premium_account_allows_overdraft_with_fee(self):
@@ -301,6 +311,15 @@ class InvestmentAccountTestCase(unittest.TestCase):
         self.assertEqual(projection["stocks"], Decimal("448.00"))
         self.assertEqual(projection["etf"], Decimal("327.00"))
         self.assertEqual(account.balance, Decimal("300"))
+
+    def test_investment_account_rounds_projection_to_bank_precision(self):
+        account = InvestmentAccount("Diana", Currency.USD)
+        account.deposit(200)
+        account.invest_in_asset("stocks", 100)
+
+        projection = account.project_yearly_growth()
+
+        self.assertEqual(projection["stocks"], Decimal("112.00"))
 
     def test_investment_account_withdraws_and_rejects_over_investing(self):
         account = InvestmentAccount("Diana", Currency.USD)
@@ -647,6 +666,22 @@ class AccountAuditLoggerTestCase(unittest.TestCase):
 
             mock_get_logger.assert_called_once_with("audit")
             mock_logger.log.assert_called_once()
+
+    def test_account_audit_logger_uses_injected_now_provider_for_audit_journal(self):
+        with patch("audit.loggers.base_audit_logger.logging.getLogger"):
+            expected_time = datetime(2026, 4, 3, 14, 0)
+            audit_journal = AuditJournal()
+            audit_logger = AccountAuditLogger(
+                "audit",
+                audit_journal=audit_journal,
+                now_provider=lambda: expected_time,
+            )
+            account = SavingsAccount("Bob", Currency.EUR, min_balance=100, monthly_interest_rate=0.02)
+
+            audit_logger.log("deposit", account, amount=500)
+
+            self.assertEqual(len(audit_journal.entries), 1)
+            self.assertEqual(audit_journal.entries[0].timestamp, expected_time)
 
 
 class TransactionQueueTestCase(unittest.TestCase):
