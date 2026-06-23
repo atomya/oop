@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from shared.enums import Currency, RiskLevel
 from transactions.transaction import Transaction
-from utils.currency import BASE_EXCHANGE_RATES, convert_currency_amount, validate_exchange_rates
+from utils.currency import convert_currency_amount, resolve_exchange_rates
 from utils.validation import require_non_negative_decimal, require_non_negative_int, require_positive_int
 
 from risk.risk_assessment import RiskAssessment
@@ -22,7 +22,7 @@ class RiskAnalyzer:
         now_provider=None,
     ):
         self._base_currency = base_currency
-        self._exchange_rates = validate_exchange_rates(exchange_rates or BASE_EXCHANGE_RATES)
+        self._exchange_rates = resolve_exchange_rates(exchange_rates)
         self._large_amount_threshold = require_non_negative_decimal(
             large_amount_threshold,
             "Large amount threshold",

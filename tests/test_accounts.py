@@ -14,6 +14,7 @@ from audit.loggers.account_audit_logger import AccountAuditLogger
 from audit.loggers.base_audit_logger import BaseAuditLogger
 from audit.loggers.transaction_audit_logger import TransactionAuditLogger
 from accounts.types.investment.portfolio_position import PortfolioPosition
+from demo_support.reports import build_transaction_statistics
 from demo_support.validation import validate_account_preparation_steps, validate_transaction_group_definitions
 from domain.bank import Bank
 from domain.client import Client
@@ -606,6 +607,21 @@ class BankTestCase(unittest.TestCase):
 
         self.assertEqual(account.status, AccountStatus.ACTIVE)
 
+    def test_bank_rejects_incomplete_exchange_rates_at_initialization(self):
+        with self.assertRaises(InvalidOperationError):
+            Bank(
+                "Broken Rates Bank",
+                now_provider=lambda: datetime(2026, 4, 3, 12, 0),
+                exchange_rates={Currency.USD: Decimal("1.00")},
+            )
+
+        with self.assertRaises(InvalidOperationError):
+            Bank(
+                "Empty Rates Bank",
+                now_provider=lambda: datetime(2026, 4, 3, 12, 0),
+                exchange_rates={},
+            )
+
 
 class AccountServiceTestCase(unittest.TestCase):
     def test_account_service_logs_operations(self):
@@ -859,6 +875,39 @@ class TransactionQueueTestCase(unittest.TestCase):
 
 
 class TransactionProcessorTestCase(unittest.TestCase):
+    def test_transaction_processor_tracks_premium_account_fee_in_transaction_fee(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        carol_account = transaction_setup["carol_account"]
+
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+        transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=40,
+            currency=Currency.USD,
+            sender=carol_account.account_id,
+            recipient="external-premium-1",
+            transaction_id="tx-premium-fee-001",
+            created_at=current_time["value"],
+        )
+        queue.add(transaction)
+
+        processed_transactions = processor.process_all(queue)
+        stats = build_transaction_statistics(processed_transactions, suspicious_operations=[])
+
+        self.assertEqual(len(processed_transactions), 1)
+        self.assertEqual(transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(transaction.fee, Decimal("10.80"))
+        self.assertEqual(carol_account.balance, Decimal("-0.80"))
+        self.assertEqual(stats["total_fees"], Decimal("10.80"))
+
     def test_transaction_processor_handles_conversion_external_fee_and_failures(self):
         current_time = {"value": datetime(2026, 4, 5, 12, 0)}
         transaction_setup = build_transaction_bank(current_time)
@@ -977,6 +1026,75 @@ class TransactionProcessorTestCase(unittest.TestCase):
         self.assertEqual(len(second_pass), 1)
         self.assertEqual(transaction.status, TransactionStatus.COMPLETED)
         self.assertEqual(alice_account.balance, Decimal("1969.40"))
+
+    def test_transaction_processor_refunds_full_premium_debit_on_temporary_failure(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        carol_account = transaction_setup["carol_account"]
+
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+            retry_delay_minutes=5,
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+        transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=40,
+            currency=Currency.USD,
+            sender=carol_account.account_id,
+            recipient="external-premium-retry",
+            transaction_id="tx-premium-retry-001",
+            created_at=current_time["value"],
+        )
+        queue.add(transaction)
+
+        attempts = {"count": 0}
+
+        def flaky_send(*_args, **_kwargs):
+            attempts["count"] += 1
+            if attempts["count"] == 1:
+                raise TemporaryProcessingError("Gateway unavailable")
+
+        processor._send_external_transfer = flaky_send
+
+        first_pass = processor.process_all(queue)
+        self.assertEqual(len(first_pass), 1)
+        self.assertEqual(transaction.status, TransactionStatus.SCHEDULED)
+        self.assertEqual(transaction.retry_count, 1)
+        self.assertEqual(carol_account.balance, Decimal("50.00"))
+
+        current_time["value"] = current_time["value"] + timedelta(minutes=6)
+        second_pass = processor.process_all(queue)
+        self.assertEqual(len(second_pass), 1)
+        self.assertEqual(transaction.status, TransactionStatus.COMPLETED)
+        self.assertEqual(transaction.fee, Decimal("10.80"))
+        self.assertEqual(carol_account.balance, Decimal("-0.80"))
+
+    def test_transaction_processor_rejects_invalid_exchange_rate_configuration_before_processing(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        audit_logger = FakeAuditLogger()
+
+        with self.assertRaises(InvalidOperationError):
+            TransactionProcessor(
+                bank,
+                audit_logger,
+                now_provider=lambda: current_time["value"],
+                exchange_rates={Currency.USD: Decimal("1.00")},
+            )
+
+        with self.assertRaises(InvalidOperationError):
+            TransactionProcessor(
+                bank,
+                audit_logger,
+                now_provider=lambda: current_time["value"],
+                exchange_rates={},
+            )
 
     def test_transaction_processor_executes_ten_queued_transactions(self):
         current_time = {"value": datetime(2026, 4, 5, 12, 0)}

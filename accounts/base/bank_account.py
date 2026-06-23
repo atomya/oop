@@ -57,14 +57,22 @@ class BankAccount(AbstractAccount):
         self._check_status()
         self._balance += amount
 
-    def withdraw(self, amount):
+    def get_withdrawal_fee(self, amount) -> Decimal:
+        require_positive_decimal(amount, "Amount")
+        return Decimal("0.00")
+
+    def get_total_withdrawal_debit(self, amount) -> Decimal:
         amount = require_positive_decimal(amount, "Amount")
+        return amount + self.get_withdrawal_fee(amount)
+
+    def withdraw(self, amount):
+        total_debit = self.get_total_withdrawal_debit(amount)
         self._check_status()
 
-        if amount > self._balance:
+        if total_debit > self._balance:
             raise InsufficientFundsError()
 
-        self._balance -= amount
+        self._balance -= total_debit
 
     def get_account_info(self):
         return self._build_account_info(account_type="bank")

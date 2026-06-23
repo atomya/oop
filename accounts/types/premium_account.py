@@ -35,6 +35,10 @@ class PremiumAccount(BankAccount):
     def fixed_fee(self) -> Decimal:
         return self._fixed_fee
 
+    def get_withdrawal_fee(self, amount) -> Decimal:
+        require_positive_decimal(amount, "Amount")
+        return self._fixed_fee
+
     def withdraw(self, amount):
         amount = require_positive_decimal(amount, "Amount")
         self._check_status()
@@ -42,7 +46,7 @@ class PremiumAccount(BankAccount):
         if amount > self._withdrawal_limit:
             raise InvalidOperationError("Amount exceeds premium withdrawal limit")
 
-        total_debit = amount + self._fixed_fee
+        total_debit = self.get_total_withdrawal_debit(amount)
         projected_balance = self._balance - total_debit
 
         if projected_balance < -self._overdraft_limit:

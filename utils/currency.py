@@ -29,7 +29,19 @@ def validate_exchange_rates(exchange_rates: dict[Currency, Decimal]) -> dict[Cur
             raise InvalidOperationError("Exchange rates must be positive")
         normalized_rates[currency] = decimal_rate
 
+    missing_currencies = [currency.value for currency in Currency if currency not in normalized_rates]
+    if missing_currencies:
+        missing_currencies_text = ", ".join(missing_currencies)
+        raise InvalidOperationError(
+            f"Exchange rates must include all supported currencies: {missing_currencies_text}"
+        )
+
     return normalized_rates
+
+
+def resolve_exchange_rates(exchange_rates: dict[Currency, Decimal] | None = None) -> dict[Currency, Decimal]:
+    source_rates = BASE_EXCHANGE_RATES if exchange_rates is None else exchange_rates
+    return validate_exchange_rates(source_rates)
 
 
 def quantize_money(amount: Decimal) -> Decimal:
@@ -45,7 +57,10 @@ def convert_currency_amount(
     if from_currency == to_currency:
         return quantize_money(amount)
 
-    from_rate = exchange_rates[from_currency]
-    to_rate = exchange_rates[to_currency]
+    try:
+        from_rate = exchange_rates[from_currency]
+        to_rate = exchange_rates[to_currency]
+    except KeyError as error:
+        raise InvalidOperationError(f"Exchange rate for {error.args[0].value} is missing") from error
     converted_amount = (amount / from_rate) * to_rate
     return quantize_money(converted_amount)

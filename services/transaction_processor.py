@@ -17,10 +17,9 @@ from transactions.rules import TransactionRules
 from transactions.transaction import Transaction
 from transactions.transaction_queue import TransactionQueue
 from utils.currency import (
-    BASE_EXCHANGE_RATES,
     convert_currency_amount,
+    resolve_exchange_rates,
     quantize_money,
-    validate_exchange_rates,
 )
 from utils.validation import (
     require_non_negative_decimal,
@@ -48,7 +47,7 @@ class TransactionProcessor:
         self._audit_logger = audit_logger
         self._now_provider = now_provider or datetime.now
         self._risk_analyzer = risk_analyzer
-        self._exchange_rates = validate_exchange_rates(exchange_rates or BASE_EXCHANGE_RATES)
+        self._exchange_rates = resolve_exchange_rates(exchange_rates)
         self._external_transfer_fee_rate = require_non_negative_decimal(
             external_transfer_fee_rate,
             "External transfer fee rate",
@@ -62,7 +61,7 @@ class TransactionProcessor:
     def _now(self) -> datetime:
         return self._now_provider()
 
-    def _calculate_fee(self, transaction: Transaction, sender_amount: Decimal) -> Decimal:
+    def _calculate_transfer_fee(self, transaction: Transaction, sender_amount: Decimal) -> Decimal:
         if transaction.transaction_type == TransactionType.EXTERNAL_TRANSFER:
             return quantize_money(sender_amount * self._external_transfer_fee_rate)
         return Decimal("0.00")
@@ -109,15 +108,21 @@ class TransactionProcessor:
             sender.currency,
             self._exchange_rates,
         )
-        fee_amount = self._calculate_fee(transaction, sender_debit_amount)
-        total_debit = quantize_money(sender_debit_amount + fee_amount)
+        transfer_fee_amount = self._calculate_transfer_fee(transaction, sender_debit_amount)
+        sender_withdrawal_amount = quantize_money(sender_debit_amount + transfer_fee_amount)
+        account_fee_amount = quantize_money(sender.get_withdrawal_fee(sender_withdrawal_amount))
+        fee_amount = quantize_money(transfer_fee_amount + account_fee_amount)
+        total_debit = quantize_money(sender.get_total_withdrawal_debit(sender_withdrawal_amount))
 
         return {
             "sender": sender,
             "recipient": recipient,
             "sender_owner": sender_owner,
             "sender_debit_amount": sender_debit_amount,
+            "sender_withdrawal_amount": sender_withdrawal_amount,
             "recipient_credit_amount": recipient_credit_amount,
+            "transfer_fee_amount": transfer_fee_amount,
+            "account_fee_amount": account_fee_amount,
             "fee_amount": fee_amount,
             "total_debit": total_debit,
         }
@@ -132,12 +137,13 @@ class TransactionProcessor:
     def _execute_plan(self, transaction: Transaction, plan: dict) -> None:
         sender = plan["sender"]
         recipient = plan["recipient"]
+        sender_withdrawal_amount = plan["sender_withdrawal_amount"]
         total_debit = plan["total_debit"]
         recipient_credit_amount = plan["recipient_credit_amount"]
         sender_debited = False
 
         try:
-            sender.withdraw(total_debit)
+            sender.withdraw(sender_withdrawal_amount)
             sender_debited = True
 
             if transaction.transaction_type == TransactionType.INTERNAL_TRANSFER:
@@ -259,7 +265,11 @@ class TransactionProcessor:
                 client_id=sender_client_id,
                 fee=plan["fee_amount"],
                 sender_debit_amount=plan["sender_debit_amount"],
+                sender_withdrawal_amount=plan["sender_withdrawal_amount"],
+                transfer_fee_amount=plan["transfer_fee_amount"],
+                account_fee_amount=plan["account_fee_amount"],
                 recipient_credit_amount=plan["recipient_credit_amount"],
+                total_debit=plan["total_debit"],
             )
         except TemporaryProcessingError as error:
             self._handle_retry(queue, transaction, error)

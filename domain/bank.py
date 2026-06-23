@@ -6,7 +6,7 @@ from accounts import BankAccount
 from domain.client import Client
 from shared.enums import AccountStatus, ClientStatus, Currency
 from shared.exceptions import InvalidOperationError
-from utils.currency import BASE_EXCHANGE_RATES, convert_currency_amount, validate_exchange_rates
+from utils.currency import convert_currency_amount, resolve_exchange_rates
 from utils.validation import require_enum, require_non_empty_string
 
 AccountType = TypeVar("AccountType", bound=BankAccount)
@@ -27,7 +27,7 @@ class Bank:
         self._suspicious_actions: list[dict] = []
         self._now_provider = now_provider or datetime.now
         self._base_currency = require_enum(base_currency, Currency, "Base currency")
-        self._exchange_rates = validate_exchange_rates(exchange_rates or BASE_EXCHANGE_RATES)
+        self._exchange_rates = resolve_exchange_rates(exchange_rates)
 
     @staticmethod
     def _validate_account_type(
