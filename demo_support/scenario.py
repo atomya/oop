@@ -104,6 +104,7 @@ def run_demo() -> dict:
 
     return {
         "bank": bank,
+        "audit_journal": audit_journal,
         "clients": clients,
         "accounts": accounts,
         "transactions": transactions,

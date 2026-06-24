@@ -1,13 +1,14 @@
 # Banking OOP Project
 
 Учебный проект по ООП на Python.  
-Сейчас в проекте реализованы Day 1, Day 2, Day 3, Day 4, Day 5 и Day 6:
+Сейчас в проекте реализованы Day 1, Day 2, Day 3, Day 4, Day 5, Day 6 и Day 7:
 - базовые банковские счета и статусы;
 - `SavingsAccount`, `PremiumAccount`, `InvestmentAccount`;
 - система `Client` и управляющий класс `Bank`;
 - транзакции, очередь и процессинг переводов;
 - аудит и rule-based риск-анализ операций;
-- комплексная демонстрационная программа всей системы.
+- комплексная демонстрационная программа всей системы;
+- система отчётности и визуализации данных.
 
 ## Что реализовано
 
@@ -82,6 +83,14 @@
   - уровни риска `LOW`, `MEDIUM`, `HIGH`
   - блокировка `HIGH` риска до исполнения транзакции
 
+### ReportBuilder
+- текстовые отчёты
+- JSON-экспорт
+- CSV-экспорт
+- отчёты по клиенту, банку и рискам
+- диаграммы `pie`, `bar`, `line`
+- сохранение графиков через `matplotlib`
+
 ### Day 6 Demo
 - 6 клиентов
 - 12 счетов
@@ -150,7 +159,7 @@ HIGH -> NORMAL -> HIGH -> NORMAL -> LOW
 - `domain/` — доменные сущности `Bank` и `Client`
 - `transactions/` — транзакции и очередь
 - `risk/` — rule-based анализ риска
-- `services/` — application layer и процессоры
+- `services/` — application layer, процессоры и отчётность
 - `audit/` — журнал аудита, записи аудита и аудит-логгеры
 - `shared/` — общие `enums` и `exceptions`
 - `utils/` — общие утилиты валидации и ID
@@ -175,6 +184,9 @@ risk/
   risk_assessment.py
 services/
   account_service.py
+  chart_renderer.py
+  report_builder.py
+  report_output.py
   transaction_processor.py
 shared/
   enums.py
@@ -188,6 +200,7 @@ utils/
   validation.py
 tests/
   test_accounts.py
+  test_reports.py
 demo.py
 ```
 
@@ -197,6 +210,12 @@ demo.py
 
 ```bash
 python3 demo.py
+```
+
+Установка зависимости для Day 7:
+
+```bash
+python3 -m pip install -r requirements.txt
 ```
 
 Тесты:

@@ -90,12 +90,18 @@ class Bank:
     def get_account(self, account_id: str) -> BankAccount:
         return self._get_account(account_id)
 
+    def get_client(self, client_id: str) -> Client:
+        return self._get_client(client_id)
+
     def has_account(self, account_id: str) -> bool:
         try:
             self._get_account(account_id)
         except InvalidOperationError:
             return False
         return True
+
+    def list_clients(self) -> list[Client]:
+        return list(self._clients.values())
 
     def get_account_owner(self, account_id: str) -> Client:
         account_id = require_non_empty_string(account_id, "Account ID")
@@ -128,6 +134,9 @@ class Bank:
 
     def _convert_to_base_currency(self, amount: Decimal, currency: Currency) -> Decimal:
         return convert_currency_amount(amount, currency, self._base_currency, self._exchange_rates)
+
+    def convert_to_base_currency(self, amount: Decimal, currency: Currency) -> Decimal:
+        return self._convert_to_base_currency(amount, currency)
 
     def add_client(self, client: Client) -> None:
         if not isinstance(client, Client):
