@@ -275,7 +275,7 @@ class ReportBuilder:
         for account in self._get_client_accounts(client_id):
             if account.status == AccountStatus.CLOSED:
                 continue
-            total_balance += self._bank.convert_to_base_currency(account.balance, account.currency)
+            total_balance += self._bank.convert_to_base_currency(account.total_value, account.currency)
         return total_balance
 
     def build_client_report(self, client_id: str) -> dict:
@@ -289,12 +289,13 @@ class ReportBuilder:
         account_balances = []
 
         for account in client_accounts:
-            balances_by_currency[account.currency.value] += account.balance
+            if account.status != AccountStatus.CLOSED:
+                balances_by_currency[account.currency.value] += account.total_value
             accounts_by_currency[account.currency.value] += 1
             account_balances.append(
                 {
                     "label": account.account_id,
-                    "value": account.balance,
+                    "value": account.total_value,
                 }
             )
 
@@ -364,7 +365,7 @@ class ReportBuilder:
 
         for account in accounts:
             if account.status != AccountStatus.CLOSED:
-                balances_by_currency[account.currency.value] += account.balance
+                balances_by_currency[account.currency.value] += account.total_value
             accounts_by_currency[account.currency.value] += 1
 
         ranking = self._bank.get_clients_ranking(only_active=False)

@@ -23,6 +23,10 @@ class InvestmentAccount(BankAccount):
     def portfolio(self) -> dict[str, Decimal]:
         return self._portfolio.as_dict()
 
+    @property
+    def total_value(self) -> Decimal:
+        return self._balance + self._portfolio.total_invested()
+
     def withdraw(self, amount):
         amount = require_positive_decimal(amount, "Amount")
         self._check_status()
@@ -55,7 +59,12 @@ class InvestmentAccount(BankAccount):
 
     def get_account_info(self):
         info = self._build_account_info(account_type="investment")
-        info.update({"portfolio": self.portfolio})
+        info.update(
+            {
+                "portfolio": self.portfolio,
+                "invested_value": self._portfolio.total_invested(),
+            }
+        )
         return info
 
     def __str__(self):

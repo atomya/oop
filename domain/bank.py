@@ -132,6 +132,12 @@ class Bank:
         client = self._get_client(client_id) if client_id is not None else None
         self._ensure_operation_allowed(action, client=client, **details)
 
+    def ensure_client_can_transact(self, client_id: str, **details) -> None:
+        client = self._get_client(client_id)
+        if client.status == ClientStatus.BLOCKED:
+            self._mark_suspicious_action("process_transaction", client=client, reason="blocked_client", **details)
+            raise InvalidOperationError("Blocked client cannot initiate transactions")
+
     def _convert_to_base_currency(self, amount: Decimal, currency: Currency) -> Decimal:
         return convert_currency_amount(amount, currency, self._base_currency, self._exchange_rates)
 
@@ -175,7 +181,6 @@ class Bank:
         self._ensure_operation_allowed("close_account", client=owner, account_id=account_id)
 
         account.close()
-        owner.remove_account(account_id)
 
     def freeze_account(self, account_id: str) -> None:
         account = self._get_account(account_id)
@@ -262,7 +267,7 @@ class Bank:
         total = Decimal("0.00")
         for account in self._accounts.values():
             if account.status != AccountStatus.CLOSED:
-                total += self._convert_to_base_currency(account.balance, account.currency)
+                total += self._convert_to_base_currency(account.total_value, account.currency)
         return total
 
     def get_clients_ranking(self, only_active: bool = True) -> list[dict]:
@@ -276,7 +281,9 @@ class Bank:
             total_balance = Decimal("0.00")
             for account_id in client.account_ids:
                 account = self._accounts[account_id]
-                total_balance += self._convert_to_base_currency(account.balance, account.currency)
+                if account.status == AccountStatus.CLOSED:
+                    continue
+                total_balance += self._convert_to_base_currency(account.total_value, account.currency)
 
             ranking.append(
                 {

@@ -498,7 +498,11 @@ class BankTestCase(unittest.TestCase):
 
         bank.close_account(account.account_id)
         self.assertEqual(account.status, AccountStatus.CLOSED)
-        self.assertEqual(client.account_ids, [])
+        self.assertEqual(client.account_ids, [account.account_id])
+        self.assertEqual(
+            bank.search_accounts(client_id=client.client_id, status=AccountStatus.CLOSED),
+            [account],
+        )
 
     def test_bank_blocks_client_after_three_failed_logins(self):
         bank = Bank("Test Bank", now_provider=lambda: datetime(2026, 4, 3, 10, 0))
@@ -571,6 +575,34 @@ class BankTestCase(unittest.TestCase):
         self.assertEqual(len(ranking), 2)
         self.assertEqual(len(full_ranking), 3)
         self.assertEqual(bank.get_total_balance(), Decimal("2043.48"))
+
+    def test_bank_counts_investment_portfolio_in_total_balance_and_ranking(self):
+        bank = Bank("Investment Bank", now_provider=lambda: datetime(2026, 4, 3, 12, 0))
+        investor = build_client(full_name="Investor", client_id="client-401")
+        saver = build_client(full_name="Saver", client_id="client-402")
+        bank.add_client(investor)
+        bank.add_client(saver)
+
+        investment_account = bank.open_account(investor.client_id, InvestmentAccount, currency=Currency.USD)
+        savings_account = bank.open_account(
+            saver.client_id,
+            SavingsAccount,
+            currency=Currency.USD,
+            min_balance=0,
+            monthly_interest_rate=0.01,
+        )
+
+        investment_account.deposit(1000)
+        investment_account.invest_in_asset("stocks", 700)
+        savings_account.deposit(500)
+
+        ranking = bank.get_clients_ranking(only_active=False)
+
+        self.assertEqual(investment_account.balance, Decimal("300"))
+        self.assertEqual(investment_account.total_value, Decimal("1000"))
+        self.assertEqual(bank.get_total_balance(), Decimal("1500.00"))
+        self.assertEqual(ranking[0]["client_id"], investor.client_id)
+        self.assertEqual(ranking[0]["total_balance"], Decimal("1000.00"))
 
     def test_bank_rejects_invalid_arguments_before_late_failures(self):
         bank = Bank("Validation Bank", now_provider=lambda: datetime(2026, 4, 3, 12, 0))
@@ -1095,6 +1127,43 @@ class TransactionProcessorTestCase(unittest.TestCase):
                 now_provider=lambda: current_time["value"],
                 exchange_rates={},
             )
+
+    def test_transaction_processor_blocks_transfers_from_blocked_client(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        alice_account = transaction_setup["alice_account"]
+        alice = bank.get_account_owner(alice_account.account_id)
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+
+        for _ in range(3):
+            with self.assertRaises(InvalidOperationError):
+                bank.authenticate_client(alice.client_id, "0000")
+
+        transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=50,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient="external-blocked-client",
+            transaction_id="tx-blocked-client-001",
+            created_at=current_time["value"],
+        )
+        queue.add(transaction)
+
+        processed_transactions = processor.process_all(queue)
+
+        self.assertEqual(len(processed_transactions), 1)
+        self.assertEqual(alice.status, ClientStatus.BLOCKED)
+        self.assertEqual(transaction.status, TransactionStatus.FAILED)
+        self.assertIn("Blocked client cannot initiate transactions", transaction.failure_reason)
+        self.assertEqual(alice_account.balance, Decimal("2000.00"))
 
     def test_transaction_processor_executes_ten_queued_transactions(self):
         current_time = {"value": datetime(2026, 4, 5, 12, 0)}

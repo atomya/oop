@@ -83,6 +83,10 @@ class TransactionProcessor:
             client_id=sender_owner.client_id,
             transaction_id=transaction.transaction_id,
         )
+        self._bank.ensure_client_can_transact(
+            sender_owner.client_id,
+            transaction_id=transaction.transaction_id,
+        )
         self._validate_account_for_transfer(sender, "Sender", check_negative_balance=True)
 
         if transaction.transaction_type == TransactionType.INTERNAL_TRANSFER:

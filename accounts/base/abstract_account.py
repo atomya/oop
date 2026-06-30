@@ -69,6 +69,10 @@ class AbstractAccount(ABC):
     @abstractmethod
     def withdraw(self, amount): ...
 
+    @property
+    @abstractmethod
+    def total_value(self) -> Decimal: ...
+
     @abstractmethod
     def get_account_info(self): ...
 

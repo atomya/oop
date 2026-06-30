@@ -36,12 +36,17 @@ class BankAccount(AbstractAccount):
     def status(self) -> AccountStatus:
         return self._status
 
+    @property
+    def total_value(self) -> Decimal:
+        return self._balance
+
     def _build_account_info(self, account_type: str) -> dict:
         return {
             "type": account_type,
             "id": self._account_id,
             "owner": self._owner,
             "balance": self._balance,
+            "total_value": self.total_value,
             "currency": self._currency.value,
             "status": self._status.value,
         }
