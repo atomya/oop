@@ -1165,6 +1165,39 @@ class TransactionProcessorTestCase(unittest.TestCase):
         self.assertIn("Blocked client cannot initiate transactions", transaction.failure_reason)
         self.assertEqual(alice_account.balance, Decimal("2000.00"))
 
+    def test_transaction_processor_creates_default_risk_analyzer_when_none_is_passed(self):
+        current_time = {"value": datetime(2026, 4, 5, 12, 0)}
+        transaction_setup = build_transaction_bank(current_time)
+        bank = transaction_setup["bank"]
+        alice_account = transaction_setup["alice_account"]
+        audit_logger = FakeAuditLogger()
+        processor = TransactionProcessor(
+            bank,
+            audit_logger,
+            now_provider=lambda: current_time["value"],
+            risk_analyzer=None,
+        )
+        queue = TransactionQueue(now_provider=lambda: current_time["value"])
+        transaction = Transaction(
+            transaction_type=TransactionType.EXTERNAL_TRANSFER,
+            amount=1500,
+            currency=Currency.USD,
+            sender=alice_account.account_id,
+            recipient="external-new-recipient-risk",
+            transaction_id="tx-default-risk-001",
+            created_at=current_time["value"],
+        )
+        queue.add(transaction)
+
+        processed_transactions = processor.process_all(queue)
+
+        self.assertEqual(len(processed_transactions), 1)
+        self.assertEqual(transaction.status, TransactionStatus.FAILED)
+        self.assertEqual(transaction.failure_reason, "High risk operation blocked")
+        self.assertEqual(alice_account.balance, Decimal("2000.00"))
+        self.assertEqual(len(queue), 0)
+        self.assertEqual(audit_logger.entries[0][0], "transaction_blocked_high_risk")
+
     def test_transaction_processor_executes_ten_queued_transactions(self):
         current_time = {"value": datetime(2026, 4, 5, 12, 0)}
         transaction_setup = build_transaction_bank(current_time)

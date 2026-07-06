@@ -42,12 +42,18 @@ class TransactionProcessor:
     ):
         if not isinstance(bank, Bank):
             raise InvalidOperationError("TransactionProcessor requires a Bank instance")
+        if risk_analyzer is not None and not isinstance(risk_analyzer, RiskAnalyzer):
+            raise InvalidOperationError("Risk analyzer must be a RiskAnalyzer instance")
 
         self._bank = bank
         self._audit_logger = audit_logger
         self._now_provider = now_provider or datetime.now
-        self._risk_analyzer = risk_analyzer
         self._exchange_rates = resolve_exchange_rates(exchange_rates)
+        self._risk_analyzer = risk_analyzer or RiskAnalyzer(
+            base_currency=bank.base_currency,
+            exchange_rates=self._exchange_rates,
+            now_provider=self._now_provider,
+        )
         self._external_transfer_fee_rate = require_non_negative_decimal(
             external_transfer_fee_rate,
             "External transfer fee rate",
@@ -184,9 +190,6 @@ class TransactionProcessor:
         )
 
     def _assess_risk(self, queue: TransactionQueue, transaction: Transaction):
-        if self._risk_analyzer is None:
-            return None, None
-
         sender_owner = self._bank.get_account_owner(transaction.sender)
         assessment = self._risk_analyzer.assess_transaction(
             transaction,
@@ -257,7 +260,7 @@ class TransactionProcessor:
             self._execute_plan(transaction, plan)
             transaction.mark_completed(self._now(), fee=plan["fee_amount"])
             queue.remove(transaction.transaction_id)
-            if self._risk_analyzer is not None and sender_client_id is not None:
+            if sender_client_id is not None:
                 self._risk_analyzer.mark_successful_transaction(sender_client_id, transaction)
             self._audit_logger.log(
                 "transaction_completed",
